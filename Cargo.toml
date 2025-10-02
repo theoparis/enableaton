@@ -1,0 +1,10 @@
+[package]
+name = "gambleton"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pollster = "0.4.0"
+vello = { git = "https://github.com/linebender/vello/", default-features = false, features = ["wgpu"] }
+wgpu = { version = "26.0.1", default-features = false, features = ["vulkan", "wgsl"] }
+winit = { version = "0.30.12", default-features = false, features = ["rwh_06", "x11"] }
