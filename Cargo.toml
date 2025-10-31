@@ -4,7 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytemuck = "1.24.0"
 pollster = "0.4.0"
-vello = { git = "https://github.com/linebender/vello/", default-features = false, features = ["wgpu"] }
-wgpu = { version = "26.0.1", default-features = false, features = ["vulkan", "wgsl"] }
-winit = { version = "0.30.12", default-features = false, features = ["rwh_06", "x11"] }
+rodio = { version = "0.21.1", default-features = false, features = [
+    "flac",
+    "playback",
+] }
+skrifa = "0.37.0"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+wgpu = "27.0.1"
+winit = { version = "0.30.12", default-features = false, features = [
+    "rwh_06",
+    "x11",
+] }
+xilem = "0.4.0"
