@@ -18,4 +18,4 @@ winit = { version = "0.30.12", default-features = false, features = [
     "rwh_06",
     "x11",
 ] }
-xilem = "0.4.0"
+xilem = { git = "https://github.com/linebender/xilem" }

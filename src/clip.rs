@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use xilem::{
 	Affine, Color, Pod, ViewCtx,
-	core::{MessageContext, MessageResult, Mut, View, ViewMarker},
+	core::{MessageCtx, MessageResult, Mut, View, ViewArgument, ViewMarker},
 	masonry::{
 		accesskit::Role,
 		core::{ChildrenIds, Widget},
@@ -72,10 +72,9 @@ impl Widget for ClipView {
 			&rect.to_rounded_rect(10.0),
 		);
 
-		let samples_per_pixel = self.clip.data.len() / size.width as usize;
-		let samples_per_pixel = samples_per_pixel.max(1); // Prevent division by zero
+		let samples_per_point = self.clip.data.len() / 1024;
 
-		let chunks: Vec<_> = self.clip.data.chunks(samples_per_pixel).collect();
+		let chunks: Vec<_> = self.clip.data.chunks(samples_per_point).collect();
 		let total_chunks = chunks.len();
 
 		let waveform_path = chunks.iter().enumerate().fold(
@@ -127,14 +126,14 @@ impl Widget for ClipView {
 }
 
 impl ViewMarker for ClipView {}
-impl<State, Action> View<State, Action, ViewCtx> for ClipView {
+impl<State: ViewArgument, Action> View<State, Action, ViewCtx> for ClipView {
 	type Element = Pod<ClipView>;
 	type ViewState = ();
 
 	fn build(
 		&self,
 		ctx: &mut ViewCtx,
-		_: &mut State,
+		_: State::Params<'_>,
 	) -> (Self::Element, Self::ViewState) {
 		ctx.with_leaf_action_widget(|ctx| ctx.create_pod(self.clone()))
 	}
@@ -145,7 +144,7 @@ impl<State, Action> View<State, Action, ViewCtx> for ClipView {
 		(): &mut Self::ViewState,
 		_ctx: &mut ViewCtx,
 		mut _element: Mut<'_, Self::Element>,
-		_: &mut State,
+		_: State::Params<'_>,
 	) {
 	}
 
@@ -161,9 +160,9 @@ impl<State, Action> View<State, Action, ViewCtx> for ClipView {
 	fn message(
 		&self,
 		(): &mut Self::ViewState,
-		_message: &mut MessageContext,
+		_message: &mut MessageCtx,
 		_element: Mut<'_, Self::Element>,
-		app_state: &mut State,
+		app_state: State::Params<'_>,
 	) -> MessageResult<Action> {
 		MessageResult::Nop
 	}

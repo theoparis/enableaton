@@ -11,7 +11,7 @@ use winit::{
 };
 use xilem::{
 	Color, WidgetView, WindowOptions, Xilem,
-	core::lens,
+	core::{Edit, ViewArgument, lens},
 	masonry::kurbo::{BezPath, Point, QuadSpline, Shape as _, Stroke},
 	style::{Padding, Style},
 	view::{
@@ -78,11 +78,11 @@ impl AppState {
 fn clip_view(
 	state: &mut AppState,
 	index: usize,
-) -> impl WidgetView<AppState> + use<> {
+) -> impl WidgetView<Edit<AppState>> + use<> {
 	ClipView::new(state.clips[index].clone(), state.bpm, state.sample_rate)
 }
 
-fn header(state: &mut AppState) -> impl WidgetView<AppState> + use<> {
+fn header(state: &mut AppState) -> impl WidgetView<Edit<AppState>> + use<> {
 	flex_row((
 		label(format!("BPM: {}", state.bpm)),
 		text_button(
@@ -113,7 +113,7 @@ fn header(state: &mut AppState) -> impl WidgetView<AppState> + use<> {
 	.cross_axis_alignment(CrossAxisAlignment::Center)
 }
 
-fn app_logic(state: &mut AppState) -> impl WidgetView<AppState> + use<> {
+fn app_logic(state: &mut AppState) -> impl WidgetView<Edit<AppState>> + use<> {
 	flex_col((
 		header(state),
 		(0..state.clips.len())
