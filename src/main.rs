@@ -7,11 +7,13 @@ use wgpu::{
 use winit::{
 	application::ApplicationHandler,
 	dpi::PhysicalSize,
-	event::WindowEvent,
+	event::{ButtonSource, ElementState, MouseButton, WindowEvent},
 	event_loop::{ActiveEventLoop, EventLoop},
+	keyboard::{KeyCode, PhysicalKey},
 	window::{Window, WindowAttributes, WindowId},
 };
 
+mod audio;
 mod ui;
 
 #[derive(Debug)]
@@ -196,6 +198,15 @@ struct ApplicationState {
 	render_state: RenderState,
 	scene: Scene,
 	font: ui::UiFont,
+	audio: Option<audio::AudioEngine>,
+	last_cursor_position: Option<(f64, f64)>,
+	bpm_drag: Option<BpmDragState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BpmDragState {
+	start_y: f64,
+	start_bpm: f32,
 }
 
 impl Default for ApplicationState {
@@ -206,6 +217,11 @@ impl Default for ApplicationState {
 			render_state: RenderState::Suspended,
 			scene: Scene::new(820, 742),
 			font: ui::load_ui_font(),
+			audio: audio::AudioEngine::new()
+				.inspect_err(|err| tracing::warn!("{err}"))
+				.ok(),
+			last_cursor_position: None,
+			bpm_drag: None,
 		}
 	}
 }
@@ -214,10 +230,13 @@ fn draw(
 	surface: &mut RenderSurface,
 	scene: &mut Scene,
 	font: &ui::UiFont,
+	data: &ui::ArrangementViewData,
 	scale_factor: f64,
 ) {
-	let (win_w, win_h) =
-		(surface.config.width as f64, surface.config.height as f64);
+	let (win_w, win_h) = (
+		surface.config.width as f64 / scale_factor,
+		surface.config.height as f64 / scale_factor,
+	);
 
 	let transform = Affine::scale(scale_factor);
 
@@ -225,7 +244,7 @@ fn draw(
 
 	scene.push_layer(None, None, None, None, None);
 	scene.set_paint_transform(transform);
-	ui::draw_arrangement_view(scene, win_w, win_h, font);
+	ui::draw_arrangement_view(scene, win_w, win_h, font, data);
 	scene.pop_layer();
 }
 
@@ -234,6 +253,7 @@ fn resize_surface(
 	surface: &mut RenderSurface,
 	scene: &mut Scene,
 	font: &ui::UiFont,
+	data: &ui::ArrangementViewData,
 	size: PhysicalSize<u32>,
 	scale_factor: f64,
 ) {
@@ -242,7 +262,7 @@ fn resize_surface(
 		u16::try_from(size.width.max(1)).unwrap_or(u16::MAX),
 		u16::try_from(size.height.max(1)).unwrap_or(u16::MAX),
 	);
-	draw(surface, scene, font, scale_factor);
+	draw(surface, scene, font, data, scale_factor);
 }
 
 impl ApplicationHandler for ApplicationState {
@@ -293,7 +313,13 @@ impl ApplicationHandler for ApplicationState {
 			return;
 		};
 
-		draw(surface, &mut self.scene, &self.font, window.scale_factor());
+		draw(
+			surface,
+			&mut self.scene,
+			&self.font,
+			&view_data_from_audio(self.audio.as_ref()),
+			window.scale_factor(),
+		);
 	}
 
 	fn window_event(
@@ -319,9 +345,11 @@ impl ApplicationHandler for ApplicationState {
 					surface,
 					&mut self.scene,
 					&self.font,
+					&view_data_from_audio(self.audio.as_ref()),
 					size,
 					window.scale_factor(),
 				);
+				window.request_redraw();
 			}
 			WindowEvent::ScaleFactorChanged {
 				scale_factor: _scale_factor,
@@ -338,11 +366,149 @@ impl ApplicationHandler for ApplicationState {
 					surface,
 					&mut self.scene,
 					&self.font,
+					&view_data_from_audio(self.audio.as_ref()),
 					new_surface_size,
 					window.scale_factor(),
 				);
 			}
+			WindowEvent::PointerMoved { position, .. } => {
+				self.last_cursor_position = Some((position.x, position.y));
+				if let (Some(drag), Some(audio)) =
+					(self.bpm_drag, self.audio.as_mut())
+				{
+					let delta_y = drag.start_y - position.y;
+					let next_bpm = drag.start_bpm + delta_y as f32 * 0.20;
+					audio.set_bpm(next_bpm);
+					draw(
+						surface,
+						&mut self.scene,
+						&self.font,
+						&view_data_from_audio(self.audio.as_ref()),
+						window.scale_factor(),
+					);
+					window.request_redraw();
+				}
+			}
+			WindowEvent::KeyboardInput { event, .. } => {
+				if event.state != ElementState::Pressed || event.repeat {
+					return;
+				}
+
+				let Some(audio) = self.audio.as_mut() else {
+					return;
+				};
+
+				match event.physical_key {
+					PhysicalKey::Code(KeyCode::Space) => {
+						if audio.transport_state().is_playing {
+							audio.pause();
+						} else {
+							audio.play();
+						}
+					}
+					PhysicalKey::Code(KeyCode::KeyS) => {
+						audio.stop_and_rewind();
+					}
+					PhysicalKey::Code(KeyCode::KeyL) => {
+						audio.toggle_looping();
+					}
+					PhysicalKey::Code(KeyCode::KeyR) => {
+						audio.toggle_recording();
+					}
+					_ => return,
+				}
+
+				draw(
+					surface,
+					&mut self.scene,
+					&self.font,
+					&view_data_from_audio(self.audio.as_ref()),
+					window.scale_factor(),
+				);
+				window.request_redraw();
+			}
+			WindowEvent::PointerButton {
+				state: ElementState::Pressed,
+				button: ButtonSource::Mouse(MouseButton::Left),
+				..
+			} => {
+				let Some((x, y)) = self.last_cursor_position else {
+					return;
+				};
+
+				let Some(control) = ui::hit_test_transport_control(
+					surface.config.width as f64 / window.scale_factor(),
+					surface.config.height as f64 / window.scale_factor(),
+					x,
+					y,
+				) else {
+					return;
+				};
+
+				if let Some(audio) = self.audio.as_mut() {
+					match control {
+						ui::TransportControl::Bpm => {
+							self.bpm_drag = Some(BpmDragState {
+								start_y: y,
+								start_bpm: audio.bpm(),
+							});
+							return;
+						}
+						ui::TransportControl::Play => audio.play(),
+						ui::TransportControl::Pause => audio.pause(),
+						ui::TransportControl::Stop => audio.stop_and_rewind(),
+						ui::TransportControl::Record => {
+							audio.toggle_recording()
+						}
+						ui::TransportControl::ToggleLoop => {
+							audio.toggle_looping()
+						}
+					}
+				}
+
+				draw(
+					surface,
+					&mut self.scene,
+					&self.font,
+					&view_data_from_audio(self.audio.as_ref()),
+					window.scale_factor(),
+				);
+				window.request_redraw();
+			}
+			WindowEvent::PointerButton {
+				state: ElementState::Released,
+				button: ButtonSource::Mouse(MouseButton::Left),
+				..
+			} => {
+				self.bpm_drag = None;
+			}
 			WindowEvent::RedrawRequested => {
+				let size = window.surface_size();
+				if size.width != surface.config.width
+					|| size.height != surface.config.height
+				{
+					resize_surface(
+						&self.context,
+						surface,
+						&mut self.scene,
+						&self.font,
+						&view_data_from_audio(self.audio.as_ref()),
+						size,
+						window.scale_factor(),
+					);
+				}
+
+				if let Some(audio) = self.audio.as_mut() {
+					audio.tick();
+				}
+				draw(
+					surface,
+					&mut self.scene,
+					&self.font,
+					&view_data_from_audio(self.audio.as_ref()),
+					window.scale_factor(),
+				);
+
 				let Some(renderer) = self.renderers[surface.dev_id].as_mut()
 				else {
 					return;
@@ -395,6 +561,52 @@ impl ApplicationHandler for ApplicationState {
 	fn destroy_surfaces(&mut self, _event_loop: &dyn ActiveEventLoop) {
 		self.render_state = RenderState::Suspended;
 	}
+
+	fn about_to_wait(&mut self, _event_loop: &dyn ActiveEventLoop) {
+		if let Some(audio) = self.audio.as_mut() {
+			audio.tick();
+		}
+		if let RenderState::Active { surface, window } = &mut self.render_state {
+			let size = window.surface_size();
+			let mut resized = false;
+			if size.width != surface.config.width
+				|| size.height != surface.config.height
+			{
+				resize_surface(
+					&self.context,
+					surface,
+					&mut self.scene,
+					&self.font,
+					&view_data_from_audio(self.audio.as_ref()),
+					size,
+					window.scale_factor(),
+				);
+				resized = true;
+			}
+			let is_playing = self
+				.audio
+				.as_ref()
+				.is_some_and(|audio| audio.transport_state().is_playing);
+			if is_playing || resized {
+				window.request_redraw();
+			}
+		}
+	}
+}
+
+fn view_data_from_audio(
+	audio: Option<&audio::AudioEngine>,
+) -> ui::ArrangementViewData {
+	audio.map_or(
+		ui::ArrangementViewData {
+			transport: ui::TransportState::default(),
+			bpm: 124.0,
+			playhead_beats: 0.0,
+			clips: Vec::new(),
+			midi_clips: Vec::new(),
+		},
+		audio::AudioEngine::view_data,
+	)
 }
 
 fn main() -> Result<(), winit::error::EventLoopError> {

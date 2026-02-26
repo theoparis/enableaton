@@ -6,10 +6,7 @@ edition = "2024"
 [dependencies]
 bytemuck = "1.25.0"
 pollster = "0.4.0"
-rodio = { version = "0.22.1", default-features = false, features = [
-    "flac",
-    "playback",
-] }
+rodio = "0.22.1"
 skrifa = "0.40.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }

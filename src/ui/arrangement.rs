@@ -7,16 +7,68 @@ use crate::ui::primitives::{
 	draw_triangle, fill_rect, fill_viewport, rgb, rgba,
 };
 use crate::ui::text::draw_text;
+use crate::ui::{
+	ArrangementViewData, AudioClipView, MidiClipView, TransportState,
+};
 
 pub const BASE_WIDTH: f64 = 820.0;
 pub const BASE_HEIGHT: f64 = 742.0;
 const TOP_BAR_HEIGHT: f64 = 42.0;
+const TIMELINE_ORIGIN_X: f64 = 49.0;
+const BEAT_PIXELS: f64 = 33.5;
 
 const LOCATOR_LEFT: f64 = 26.0;
 const LOCATOR_VERSE_IN: f64 = 258.0;
 const LOCATOR_VERSE_OUT: f64 = 287.0;
 
-pub fn draw(scene: &mut Scene, layout: &Layout, font: &UiFont) {
+#[derive(Clone, Copy, Debug)]
+pub enum TransportControl {
+	Bpm,
+	Play,
+	Pause,
+	Stop,
+	Record,
+	ToggleLoop,
+}
+
+pub fn hit_test_transport(
+	layout: &Layout,
+	x: f64,
+	y: f64,
+) -> Option<TransportControl> {
+	let (cx, cy) = layout.to_content_point(x, y);
+	if !(0.0..=TOP_BAR_HEIGHT).contains(&cy) {
+		return None;
+	}
+
+	if contains(cx, cy, 18.0, 8.0, 90.0, 34.0) {
+		return Some(TransportControl::Bpm);
+	}
+	if contains(cx, cy, 538.0, 8.0, 572.0, 34.0) {
+		return Some(TransportControl::Play);
+	}
+	if contains(cx, cy, 578.0, 8.0, 612.0, 34.0) {
+		return Some(TransportControl::Pause);
+	}
+	if contains(cx, cy, 618.0, 8.0, 652.0, 34.0) {
+		return Some(TransportControl::Stop);
+	}
+	if contains(cx, cy, 658.0, 8.0, 692.0, 34.0) {
+		return Some(TransportControl::Record);
+	}
+	if contains(cx, cy, 454.0, 8.0, 530.0, 34.0) {
+		return Some(TransportControl::ToggleLoop);
+	}
+
+	None
+}
+
+pub fn draw(
+	scene: &mut Scene,
+	layout: &Layout,
+	font: &UiFont,
+	data: &ArrangementViewData,
+) {
 	let view_w = layout.content_width();
 	let view_h = layout.content_height();
 
@@ -33,10 +85,18 @@ pub fn draw(scene: &mut Scene, layout: &Layout, font: &UiFont) {
 
 	draw_grid(scene, layout, view_w, view_h);
 	draw_ruler(scene, layout, font, view_w);
-	draw_midi_lane(scene, layout, view_w);
-	draw_audio_blocks(scene, layout, font);
+	draw_midi_lane(scene, layout, view_w, &data.midi_clips);
+	draw_audio_blocks(scene, layout, font, &data.clips, data.bpm);
 	draw_locators(scene, layout, view_h);
-	draw_top_bar(scene, layout, font);
+	draw_playhead(scene, layout, view_h, data.playhead_beats);
+	draw_top_bar(
+		scene,
+		layout,
+		font,
+		data.transport,
+		data.bpm,
+		data.playhead_beats,
+	);
 }
 
 fn draw_grid(scene: &mut Scene, layout: &Layout, view_w: f64, view_h: f64) {
@@ -142,7 +202,12 @@ fn draw_ruler(scene: &mut Scene, layout: &Layout, font: &UiFont, view_w: f64) {
 	);
 }
 
-fn draw_midi_lane(scene: &mut Scene, layout: &Layout, view_w: f64) {
+fn draw_midi_lane(
+	scene: &mut Scene,
+	layout: &Layout,
+	view_w: f64,
+	midi_clips: &[MidiClipView],
+) {
 	fill_rect(
 		scene,
 		layout,
@@ -171,52 +236,76 @@ fn draw_midi_lane(scene: &mut Scene, layout: &Layout, view_w: f64) {
 		rgb(0.12, 0.49, 0.46),
 	);
 
-	for i in 0..30 {
-		let x = 30.0 + f64::from(i) * 26.5;
+	for i in 0..60 {
+		let x = 30.0 + f64::from(i) * 13.25;
 		fill_rect(scene, layout, x, 173.0, x + 2.0, 231.0, rgb(0.1, 0.53, 0.5));
 	}
 
-	for row in 0..3 {
-		let y = 200.0 + f64::from(row) * 11.0;
-		for i in 0..16 {
-			let x0 = 32.0
-				+ f64::from(i) * 65.0
-				+ if i % 2 == 0 { 0.0 } else { 18.0 };
+	for row in 0..4 {
+		let y = 178.0 + f64::from(row) * 13.0;
+		fill_rect(
+			scene,
+			layout,
+			27.0,
+			y,
+			view_w,
+			y + 1.0,
+			rgb(0.1, 0.44, 0.42),
+		);
+	}
+
+	for (clip_idx, clip) in midi_clips.iter().enumerate() {
+		let x0 = TIMELINE_ORIGIN_X + f64::from(clip.start_beats) * BEAT_PIXELS;
+		let x1 = x0 + (f64::from(clip.duration_beats) * BEAT_PIXELS).max(32.0);
+		fill_rect(scene, layout, x0, 172.0, x1, 231.0, rgb(0.41, 0.90, 0.85));
+		fill_rect(scene, layout, x0, 172.0, x1, 175.0, rgb(0.20, 0.70, 0.66));
+
+		for note in &clip.notes {
+			let nx0 = x0 + f64::from(note.start_beats) * BEAT_PIXELS;
+			let nx1 =
+				nx0 + (f64::from(note.duration_beats) * BEAT_PIXELS).max(4.0);
+			let pitch_row = (note.midi_note.saturating_sub(60) % 12) as f64;
+			let y = 228.0 - pitch_row * 4.4;
 			fill_rect(
 				scene,
 				layout,
-				x0,
+				nx0,
 				y,
-				x0 + 42.0,
-				y + 2.5,
-				rgb(0.15, 0.19, 0.2),
-			);
-			fill_rect(
-				scene,
-				layout,
-				x0 + 46.0,
-				y,
-				x0 + 57.0,
-				y + 2.5,
-				rgb(0.15, 0.19, 0.2),
+				nx1,
+				y + 3.2,
+				if clip_idx % 2 == 0 {
+					rgb(0.14, 0.21, 0.22)
+				} else {
+					rgb(0.11, 0.18, 0.19)
+				},
 			);
 		}
 	}
 }
 
-fn draw_audio_blocks(scene: &mut Scene, layout: &Layout, font: &UiFont) {
+fn draw_audio_blocks(
+	scene: &mut Scene,
+	layout: &Layout,
+	font: &UiFont,
+	clips: &[AudioClipView],
+	bpm: f32,
+) {
 	let clip_color = rgb(0.98, 0.68, 0.17);
 	let clip_dark = rgb(0.42, 0.30, 0.22);
+	let lane_top = 360.0;
+	let row_height = 90.0;
+	let row_gap = 10.0;
+	let secs_per_beat = 60.0 / f64::from(bpm);
 
-	let clips = [
-		(310.0, 360.0, 440.0, 640.0),
-		(440.0, 360.0, 570.0, 640.0),
-		(584.0, 360.0, 690.0, 640.0),
-		(690.0, 360.0, 790.0, 640.0),
-		(790.0, 360.0, 820.0, 640.0),
-	];
+	for (idx, clip) in clips.iter().enumerate() {
+		let row = idx % 3;
+		let y0 = lane_top + row as f64 * (row_height + row_gap);
+		let y1 = y0 + row_height;
+		let x0 = TIMELINE_ORIGIN_X + f64::from(clip.start_beats) * BEAT_PIXELS;
+		let clip_width =
+			(f64::from(clip.duration_beats) * BEAT_PIXELS).max(28.0);
+		let x1 = x0 + clip_width;
 
-	for (idx, &(x0, y0, x1, y1)) in clips.iter().enumerate() {
 		fill_rect(scene, layout, x0, y0, x1, y1, clip_color);
 		fill_rect(
 			scene,
@@ -267,10 +356,15 @@ fn draw_audio_blocks(scene: &mut Scene, layout: &Layout, font: &UiFont) {
 			scene,
 			layout,
 			font,
-			"Lead Ta",
+			&format!(
+				"{:.0}Hz {:.2}b ({:.2}s)",
+				clip.frequency_hz,
+				clip.duration_beats,
+				f64::from(clip.duration_beats) * secs_per_beat
+			),
 			x0 + 10.0,
 			y0 + 30.0,
-			18.0,
+			14.0,
 			rgb(0.12, 0.11, 0.10),
 		);
 
@@ -310,7 +404,14 @@ fn draw_locators(scene: &mut Scene, layout: &Layout, view_h: f64) {
 	);
 }
 
-fn draw_top_bar(scene: &mut Scene, layout: &Layout, font: &UiFont) {
+fn draw_top_bar(
+	scene: &mut Scene,
+	layout: &Layout,
+	font: &UiFont,
+	transport: TransportState,
+	bpm: f32,
+	playhead_beats: f32,
+) {
 	let bar_bg = rgb(0.14, 0.15, 0.16);
 	let section_bg = rgb(0.19, 0.20, 0.22);
 	let section_border = rgb(0.26, 0.27, 0.29);
@@ -335,12 +436,26 @@ fn draw_top_bar(scene: &mut Scene, layout: &Layout, font: &UiFont) {
 		top_bar_bottom,
 	));
 
+	let beat_pos = f64::from(playhead_beats);
+	let beat_number = beat_pos.floor() as i32 + 1;
+	let bar = ((beat_number - 1) / 4) + 1;
+	let beat_in_bar = ((beat_number - 1) % 4) + 1;
+	let sub = ((beat_pos.fract() * 4.0).floor() as i32 + 1).clamp(1, 4);
+	let beat_indicator = format!("{bar}.{beat_in_bar}.{sub}");
+	let bpm_label = format!("{bpm:.2}");
+	let loop_label = if transport.is_looping {
+		"Loop On"
+	} else {
+		"Loop Off"
+	};
+
 	let sections = [
-		(18.0, 8.0, 90.0, 34.0, "124.00"),    // bpm
-		(98.0, 8.0, 146.0, 34.0, "4/4"),      // time signature
-		(154.0, 8.0, 252.0, 34.0, "Met 1/4"), // metronome options
-		(260.0, 8.0, 354.0, 34.0, "C Min"),   // key/scale
-		(362.0, 8.0, 446.0, 34.0, "1.1.1"),   // beats/bar indicator
+		(18.0, 8.0, 90.0, 34.0, bpm_label.as_str()), // bpm
+		(98.0, 8.0, 146.0, 34.0, "4/4"),             // time signature
+		(154.0, 8.0, 252.0, 34.0, "Met 1/4"),        // metronome options
+		(260.0, 8.0, 354.0, 34.0, "C Min"),          // key/scale
+		(362.0, 8.0, 446.0, 34.0, beat_indicator.as_str()), // beats/bar indicator
+		(454.0, 8.0, 530.0, 34.0, loop_label),       // loop toggle
 	];
 
 	for (x0, y0, x1, y1, label) in sections {
@@ -363,31 +478,65 @@ fn draw_top_bar(scene: &mut Scene, layout: &Layout, font: &UiFont) {
 	let button_y1 = 34.0;
 
 	// play
-	fill_rect(
-		scene, layout, 474.0, button_y0, 508.0, button_y1, section_bg,
-	);
-	draw_triangle(scene, layout, 486.0, 14.0, 12.0, 14.0, accent);
+	let play_bg = if transport.is_playing {
+		rgb(0.22, 0.32, 0.26)
+	} else {
+		section_bg
+	};
+	fill_rect(scene, layout, 538.0, button_y0, 572.0, button_y1, play_bg);
+	draw_triangle(scene, layout, 550.0, 14.0, 12.0, 14.0, accent);
 
 	// pause
 	fill_rect(
-		scene, layout, 514.0, button_y0, 548.0, button_y1, section_bg,
+		scene, layout, 578.0, button_y0, 612.0, button_y1, section_bg,
 	);
-	fill_rect(scene, layout, 526.0, 14.0, 531.0, 28.0, accent);
-	fill_rect(scene, layout, 535.0, 14.0, 540.0, 28.0, accent);
+	fill_rect(scene, layout, 590.0, 14.0, 595.0, 28.0, accent);
+	fill_rect(scene, layout, 599.0, 14.0, 604.0, 28.0, accent);
+
+	// stop
+	fill_rect(
+		scene, layout, 618.0, button_y0, 652.0, button_y1, section_bg,
+	);
+	fill_rect(scene, layout, 631.0, 15.0, 640.0, 24.0, accent);
 
 	// record
-	fill_rect(
-		scene, layout, 554.0, button_y0, 588.0, button_y1, section_bg,
-	);
+	let record_bg = if transport.is_recording {
+		rgb(0.34, 0.19, 0.20)
+	} else {
+		section_bg
+	};
+	fill_rect(scene, layout, 658.0, button_y0, 692.0, button_y1, record_bg);
 	fill_rect(
 		scene,
 		layout,
-		566.0,
+		670.0,
 		14.0,
-		576.0,
+		680.0,
 		24.0,
 		rgb(0.88, 0.19, 0.23),
 	);
+}
+
+fn draw_playhead(
+	scene: &mut Scene,
+	layout: &Layout,
+	view_h: f64,
+	playhead_beats: f32,
+) {
+	let x = TIMELINE_ORIGIN_X + f64::from(playhead_beats) * BEAT_PIXELS;
+	fill_rect(
+		scene,
+		layout,
+		x,
+		TOP_BAR_HEIGHT,
+		x + 2.0,
+		view_h,
+		rgba(0.91, 0.84, 0.67, 0.95),
+	);
+}
+
+fn contains(x: f64, y: f64, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
+	x >= x0 && x <= x1 && y >= y0 && y <= y1
 }
 
 fn draw_smooth_wave_band(
