@@ -1,3 +1,4 @@
+use vello_common::kurbo::Affine;
 use vello_hybrid::{RenderSize, RenderTargetConfig, Renderer, Scene};
 use wgpu::{
 	Adapter, Device, Features, Instance, Limits, Queue, Surface,
@@ -5,6 +6,7 @@ use wgpu::{
 };
 use winit::{
 	application::ApplicationHandler,
+	dpi::PhysicalSize,
 	event::WindowEvent,
 	event_loop::{ActiveEventLoop, EventLoop},
 	window::{Window, WindowAttributes, WindowId},
@@ -208,6 +210,41 @@ impl Default for ApplicationState {
 	}
 }
 
+fn draw(
+	surface: &mut RenderSurface,
+	scene: &mut Scene,
+	font: &ui::UiFont,
+	scale_factor: f64,
+) {
+	let (win_w, win_h) =
+		(surface.config.width as f64, surface.config.height as f64);
+
+	let transform = Affine::scale(scale_factor);
+
+	scene.reset();
+
+	scene.push_layer(None, None, None, None, None);
+	scene.set_paint_transform(transform);
+	ui::draw_arrangement_view(scene, win_w, win_h, font);
+	scene.pop_layer();
+}
+
+fn resize_surface(
+	context: &RenderContext,
+	surface: &mut RenderSurface,
+	scene: &mut Scene,
+	font: &ui::UiFont,
+	size: PhysicalSize<u32>,
+	scale_factor: f64,
+) {
+	context.resize_surface(surface, size.width.max(1), size.height.max(1));
+	*scene = Scene::new(
+		u16::try_from(size.width.max(1)).unwrap_or(u16::MAX),
+		u16::try_from(size.height.max(1)).unwrap_or(u16::MAX),
+	);
+	draw(surface, scene, font, scale_factor);
+}
+
 impl ApplicationHandler for ApplicationState {
 	fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
 		if matches!(self.render_state, RenderState::Active { .. }) {
@@ -251,16 +288,12 @@ impl ApplicationHandler for ApplicationState {
 			window,
 		};
 
-		let RenderState::Active { surface, .. } = &mut self.render_state else {
+		let RenderState::Active { surface, window } = &mut self.render_state
+		else {
 			return;
 		};
 
-		ui::draw_arrangement_view(
-			&mut self.scene,
-			f64::from(surface.config.width),
-			f64::from(surface.config.height),
-			&self.font,
-		);
+		draw(surface, &mut self.scene, &self.font, window.scale_factor());
 	}
 
 	fn window_event(
@@ -281,23 +314,33 @@ impl ApplicationHandler for ApplicationState {
 		match event {
 			WindowEvent::CloseRequested => event_loop.exit(),
 			WindowEvent::SurfaceResized(size) => {
-				self.context.resize_surface(
+				resize_surface(
+					&self.context,
 					surface,
-					size.width.max(1),
-					size.height.max(1),
-				);
-				self.scene = Scene::new(
-					u16::try_from(size.width.max(1)).unwrap_or(u16::MAX),
-					u16::try_from(size.height.max(1)).unwrap_or(u16::MAX),
-				);
-				self.scene.reset();
-				ui::draw_arrangement_view(
 					&mut self.scene,
-					f64::from(surface.config.width),
-					f64::from(surface.config.height),
 					&self.font,
+					size,
+					window.scale_factor(),
 				);
-				window.request_redraw();
+			}
+			WindowEvent::ScaleFactorChanged {
+				scale_factor: _scale_factor,
+				surface_size_writer,
+			} => {
+				let new_surface_size = surface_size_writer
+					.surface_size()
+					.unwrap_or(PhysicalSize::new(
+						surface.config.width.max(1),
+						surface.config.height.max(1),
+					));
+				resize_surface(
+					&self.context,
+					surface,
+					&mut self.scene,
+					&self.font,
+					new_surface_size,
+					window.scale_factor(),
+				);
 			}
 			WindowEvent::RedrawRequested => {
 				let Some(renderer) = self.renderers[surface.dev_id].as_mut()
@@ -344,8 +387,6 @@ impl ApplicationHandler for ApplicationState {
 					device_handle.queue.submit([encoder.finish()]);
 					surface_texture.present();
 				}
-
-				// window.request_redraw();
 			}
 			_ => {}
 		}
