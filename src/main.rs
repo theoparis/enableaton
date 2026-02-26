@@ -232,7 +232,7 @@ impl ApplicationHandler for ApplicationState {
 			window_ref,
 			size.width,
 			size.height,
-			wgpu::PresentMode::AutoNoVsync,
+			wgpu::PresentMode::AutoVsync,
 			wgpu::TextureFormat::Bgra8Unorm,
 		));
 
@@ -345,7 +345,7 @@ impl ApplicationHandler for ApplicationState {
 					surface_texture.present();
 				}
 
-				window.request_redraw();
+				// window.request_redraw();
 			}
 			_ => {}
 		}

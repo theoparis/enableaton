@@ -1,0 +1,28 @@
+when:
+  - event: ["pull_request"]
+    branch: main
+
+engine: nixery
+
+dependencies:
+  nixpkgs/nixos-unstable:
+    - rustc
+    - cargo
+    - rustfmt
+    - clippy
+    - wild
+    - pkg-config
+    - alsa-lib
+    - wayland
+    - vulkan-loader
+
+environment:
+  RUSTFLAGS: "-Clinker=ld"
+
+steps:
+  - name: build and lint
+    command: |
+      export PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:$(nix build nixpkgs#alsa-lib.dev --no-link --print-out-paths)/lib/pkgconfig:$(nix build nixpkgs#wayland.dev --no-link --print-out-paths)/lib/pkgconfig:$(nix build nixpkgs#vulkan-loader.dev --no-link --print-out-paths)/lib/pkgconfig"
+      cargo fmt --check
+      cargo clippy
+      cargo build
