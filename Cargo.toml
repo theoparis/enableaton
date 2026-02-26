@@ -1,21 +1,44 @@
 [package]
-name = "gambleton"
+name = "wavello"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bytemuck = "1.24.0"
+bytemuck = "1.25.0"
 pollster = "0.4.0"
-rodio = { version = "0.21.1", default-features = false, features = [
+rodio = { version = "0.22.1", default-features = false, features = [
     "flac",
     "playback",
 ] }
-skrifa = "0.37.0"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-wgpu = "27.0.1"
-winit = { version = "0.30.12", default-features = false, features = [
-    "rwh_06",
-    "x11",
+skrifa = "0.40.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+vello_api = { git = "https://github.com/linebender/vello", version = "0.7.0", default-features = false, features = ["libm", "simd"] }
+vello_common = { git = "https://github.com/linebender/vello", version = "0.0.6", features = ["libm", "multithreading", "text"], default-features = false }
+vello_hybrid = { git = "https://github.com/linebender/vello", version = "0.0.6", default-features = false, features = ["text", "wgpu"] }
+# TODO: wgpu 27 required by vello
+wgpu = { version = "=27.0.1", default-features = false, features = ["wgsl", "vulkan", "vulkan-portability", "metal"] }
+winit = { version = "0.31.0-beta.2", default-features = false, features = [
+    "wayland",
 ] }
-xilem = { git = "https://github.com/linebender/xilem" }
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
+split-debuginfo = "unpacked"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "abort"
+strip = true
+split-debuginfo = "unpacked"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+too_many_arguments = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"

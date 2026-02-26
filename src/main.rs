@@ -1,138 +1,365 @@
-use std::{f32::consts::PI, sync::Arc};
-
-use rodio::{OutputStream, Sink};
-use wgpu::util::TextureBlitter;
+use vello_hybrid::{RenderSize, RenderTargetConfig, Renderer, Scene};
+use wgpu::{
+	Adapter, Device, Features, Instance, Limits, Queue, Surface,
+	SurfaceConfiguration, SurfaceTarget, TextureFormat,
+};
 use winit::{
 	application::ApplicationHandler,
-	error::EventLoopError,
 	event::WindowEvent,
-	event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-	window::Window,
-};
-use xilem::{
-	Color, WidgetView, WindowOptions, Xilem,
-	core::{Edit, ViewArgument, lens},
-	masonry::kurbo::{BezPath, Point, QuadSpline, Shape as _, Stroke},
-	style::{Padding, Style},
-	view::{
-		CrossAxisAlignment, MainAxisAlignment, flex_col, flex_row, label,
-		text_button,
-	},
+	event_loop::{ActiveEventLoop, EventLoop},
+	window::{Window, WindowAttributes, WindowId},
 };
 
-use crate::clip::{Clip, ClipView};
+mod ui;
 
-mod clip;
-
-struct AppState {
-	bpm: f64,
-	sample_rate: u32,
-	clips: Vec<Arc<Clip>>,
-	sink: Sink,
-	stream: OutputStream,
+#[derive(Debug)]
+struct RenderContext {
+	instance: Instance,
+	devices: Vec<DeviceHandle>,
 }
 
-impl AppState {
-	pub fn new() -> Self {
-		let stream = rodio::OutputStreamBuilder::open_default_stream().unwrap();
-		let sample_rate = stream.config().sample_rate();
+#[derive(Debug)]
+struct DeviceHandle {
+	adapter: Adapter,
+	device: Device,
+	queue: Queue,
+}
 
-		let sink = rodio::Sink::connect_new(stream.mixer());
-		sink.pause();
+#[derive(Debug)]
+struct RenderSurface<'s> {
+	surface: Surface<'s>,
+	config: SurfaceConfiguration,
+	dev_id: usize,
+}
 
+impl RenderContext {
+	fn new() -> Self {
+		let instance = Instance::new(&wgpu::InstanceDescriptor::default());
 		Self {
-			bpm: 120.0,
-			clips: vec![
-				Arc::new(Clip {
-					track: 0,
-					start: 0.0,
-					duration: 2.0,
-					color: Color::from_rgb8(200, 100, 100),
-					data: (0..sample_rate as usize * 2)
-						.map(|i| {
-							(2.0 * PI * 440.0 * (i as f32 / sample_rate as f32))
-								.sin() * 0.5
-						})
-						.collect(),
-				}),
-				Arc::new(Clip {
-					track: 1,
-					start: 1.0,
-					duration: 2.0,
-					color: Color::from_rgb8(100, 200, 100),
-					data: (0..sample_rate as usize * 2)
-						.map(|i| {
-							(2.0 * PI * 660.0 * (i as f32 / sample_rate as f32))
-								.sin() * 0.5
-						})
-						.collect(),
-				}),
-			],
-			sample_rate,
-			sink,
-			stream,
+			instance,
+			devices: Vec::new(),
+		}
+	}
+
+	async fn create_surface<'w>(
+		&mut self,
+		window: impl Into<SurfaceTarget<'w>>,
+		width: u32,
+		height: u32,
+		present_mode: wgpu::PresentMode,
+		format: TextureFormat,
+	) -> RenderSurface<'w> {
+		self.create_render_surface(
+			self.instance
+				.create_surface(window.into())
+				.expect("failed to create surface"),
+			width,
+			height,
+			present_mode,
+			format,
+		)
+		.await
+	}
+
+	async fn create_render_surface<'w>(
+		&mut self,
+		surface: Surface<'w>,
+		width: u32,
+		height: u32,
+		present_mode: wgpu::PresentMode,
+		format: TextureFormat,
+	) -> RenderSurface<'w> {
+		let dev_id = self
+			.device(Some(&surface))
+			.await
+			.expect("no compatible device");
+
+		let config = SurfaceConfiguration {
+			usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+			format,
+			width,
+			height,
+			present_mode,
+			desired_maximum_frame_latency: 2,
+			alpha_mode: wgpu::CompositeAlphaMode::Auto,
+			view_formats: vec![],
+		};
+
+		let surface = RenderSurface {
+			surface,
+			config,
+			dev_id,
+		};
+		self.configure_surface(&surface);
+		surface
+	}
+
+	fn resize_surface(
+		&self,
+		surface: &mut RenderSurface<'_>,
+		width: u32,
+		height: u32,
+	) {
+		surface.config.width = width.max(1);
+		surface.config.height = height.max(1);
+		self.configure_surface(surface);
+	}
+
+	fn configure_surface(&self, surface: &RenderSurface<'_>) {
+		surface
+			.surface
+			.configure(&self.devices[surface.dev_id].device, &surface.config);
+	}
+
+	async fn device(
+		&mut self,
+		compatible_surface: Option<&Surface<'_>>,
+	) -> Option<usize> {
+		let compatible = match compatible_surface {
+			Some(surface) => self
+				.devices
+				.iter()
+				.enumerate()
+				.find(|(_, handle)| {
+					handle.adapter.is_surface_supported(surface)
+				})
+				.map(|(idx, _)| idx),
+			None => (!self.devices.is_empty()).then_some(0),
+		};
+
+		if compatible.is_some() {
+			compatible
+		} else {
+			self.new_device(compatible_surface).await
+		}
+	}
+
+	async fn new_device(
+		&mut self,
+		compatible_surface: Option<&Surface<'_>>,
+	) -> Option<usize> {
+		let adapter = wgpu::util::initialize_adapter_from_env_or_default(
+			&self.instance,
+			compatible_surface,
+		)
+		.await
+		.ok()?;
+
+		let (device, queue) = adapter
+			.request_device(&wgpu::DeviceDescriptor {
+				label: Some("wgpu device"),
+				required_features: Features::empty(),
+				required_limits: Limits::default(),
+				..Default::default()
+			})
+			.await
+			.ok()?;
+
+		self.devices.push(DeviceHandle {
+			adapter,
+			device,
+			queue,
+		});
+
+		Some(self.devices.len() - 1)
+	}
+}
+
+fn create_renderer(
+	context: &RenderContext,
+	surface: &RenderSurface<'_>,
+) -> Renderer {
+	Renderer::new(
+		&context.devices[surface.dev_id].device,
+		&RenderTargetConfig {
+			format: surface.config.format,
+			width: surface.config.width,
+			height: surface.config.height,
+		},
+	)
+}
+
+#[derive(Debug)]
+enum RenderState {
+	Active {
+		surface: Box<RenderSurface<'static>>,
+		window: Box<dyn Window>,
+	},
+	Suspended,
+}
+
+struct ApplicationState {
+	context: RenderContext,
+	renderers: Vec<Option<Renderer>>,
+	render_state: RenderState,
+	scene: Scene,
+	font: ui::UiFont,
+}
+
+impl Default for ApplicationState {
+	fn default() -> Self {
+		Self {
+			context: RenderContext::new(),
+			renderers: Vec::new(),
+			render_state: RenderState::Suspended,
+			scene: Scene::new(820, 742),
+			font: ui::load_ui_font(),
 		}
 	}
 }
 
-fn clip_view(
-	state: &mut AppState,
-	index: usize,
-) -> impl WidgetView<Edit<AppState>> + use<> {
-	ClipView::new(state.clips[index].clone(), state.bpm, state.sample_rate)
-}
+impl ApplicationHandler for ApplicationState {
+	fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+		if matches!(self.render_state, RenderState::Active { .. }) {
+			return;
+		}
 
-fn header(state: &mut AppState) -> impl WidgetView<Edit<AppState>> + use<> {
-	flex_row((
-		label(format!("BPM: {}", state.bpm)),
-		text_button(
-			if state.sink.is_paused() {
-				"Play"
-			} else {
-				"Pause"
-			},
-			|state: &mut AppState| {
-				if state.sink.is_paused() {
-					state.sink.clear();
-					for clip in &state.clips {
-						let source = rodio::buffer::SamplesBuffer::new(
-							1,
-							state.sample_rate,
-							clip.data.clone(),
-						);
-						state.sink.append(source);
-					}
-					state.sink.play();
-				} else {
-					state.sink.pause();
+		let window = event_loop
+			.create_window(
+				WindowAttributes::default()
+					.with_title("Ableton Clone in Rust")
+					.with_surface_size(winit::dpi::PhysicalSize::new(820, 742)),
+			)
+			.expect("create window");
+
+		let size = window.surface_size();
+		let window_ref: &'static dyn Window = unsafe {
+			std::mem::transmute::<&dyn Window, &'static dyn Window>(
+				window.as_ref(),
+			)
+		};
+		let surface = pollster::block_on(self.context.create_surface(
+			window_ref,
+			size.width,
+			size.height,
+			wgpu::PresentMode::AutoNoVsync,
+			wgpu::TextureFormat::Bgra8Unorm,
+		));
+
+		self.renderers
+			.resize_with(self.context.devices.len(), || None);
+		self.renderers[surface.dev_id]
+			.get_or_insert_with(|| create_renderer(&self.context, &surface));
+
+		self.scene = Scene::new(
+			u16::try_from(size.width).unwrap_or(u16::MAX),
+			u16::try_from(size.height).unwrap_or(u16::MAX),
+		);
+
+		self.render_state = RenderState::Active {
+			surface: Box::new(surface),
+			window,
+		};
+
+		let RenderState::Active { surface, .. } = &mut self.render_state else {
+			return;
+		};
+
+		ui::draw_arrangement_view(
+			&mut self.scene,
+			f64::from(surface.config.width),
+			f64::from(surface.config.height),
+			&self.font,
+		);
+	}
+
+	fn window_event(
+		&mut self,
+		event_loop: &dyn ActiveEventLoop,
+		window_id: WindowId,
+		event: WindowEvent,
+	) {
+		let RenderState::Active { surface, window } = &mut self.render_state
+		else {
+			return;
+		};
+
+		if window.id() != window_id {
+			return;
+		}
+
+		match event {
+			WindowEvent::CloseRequested => event_loop.exit(),
+			WindowEvent::SurfaceResized(size) => {
+				self.context.resize_surface(
+					surface,
+					size.width.max(1),
+					size.height.max(1),
+				);
+				self.scene = Scene::new(
+					u16::try_from(size.width.max(1)).unwrap_or(u16::MAX),
+					u16::try_from(size.height.max(1)).unwrap_or(u16::MAX),
+				);
+				self.scene.reset();
+				ui::draw_arrangement_view(
+					&mut self.scene,
+					f64::from(surface.config.width),
+					f64::from(surface.config.height),
+					&self.font,
+				);
+				window.request_redraw();
+			}
+			WindowEvent::RedrawRequested => {
+				let Some(renderer) = self.renderers[surface.dev_id].as_mut()
+				else {
+					return;
+				};
+				let device_handle = &self.context.devices[surface.dev_id];
+
+				let Ok(surface_texture) = surface.surface.get_current_texture()
+				else {
+					self.context.resize_surface(
+						surface,
+						surface.config.width,
+						surface.config.height,
+					);
+					return;
+				};
+				let texture_view = surface_texture
+					.texture
+					.create_view(&wgpu::TextureViewDescriptor::default());
+
+				let mut encoder = device_handle.device.create_command_encoder(
+					&wgpu::CommandEncoderDescriptor {
+						label: Some("vello-ui-render"),
+					},
+				);
+
+				let render_size = RenderSize {
+					width: surface.config.width,
+					height: surface.config.height,
+				};
+
+				if renderer
+					.render(
+						&self.scene,
+						&device_handle.device,
+						&device_handle.queue,
+						&mut encoder,
+						&render_size,
+						&texture_view,
+					)
+					.is_ok()
+				{
+					device_handle.queue.submit([encoder.finish()]);
+					surface_texture.present();
 				}
-			},
-		),
-	))
-	.main_axis_alignment(MainAxisAlignment::Start)
-	.cross_axis_alignment(CrossAxisAlignment::Center)
+
+				window.request_redraw();
+			}
+			_ => {}
+		}
+	}
+
+	fn destroy_surfaces(&mut self, _event_loop: &dyn ActiveEventLoop) {
+		self.render_state = RenderState::Suspended;
+	}
 }
 
-fn app_logic(state: &mut AppState) -> impl WidgetView<Edit<AppState>> + use<> {
-	flex_col((
-		header(state),
-		(0..state.clips.len())
-			.map(|i| clip_view(state, i))
-			.collect::<Vec<_>>(),
-	))
-	.main_axis_alignment(MainAxisAlignment::Start)
-	.cross_axis_alignment(CrossAxisAlignment::Start)
-	.padding(Padding::all(10.0))
-}
-
-fn main() -> Result<(), EventLoopError> {
+fn main() -> Result<(), winit::error::EventLoopError> {
 	tracing_subscriber::fmt::init();
 
-	let app = Xilem::new_simple(
-		AppState::new(),
-		app_logic,
-		WindowOptions::new("Ableton Clone"),
-	);
-	app.run_in(EventLoop::with_user_event())?;
-	Ok(())
+	let app = ApplicationState::default();
+	let event_loop = EventLoop::new()?;
+	event_loop.run_app(app)
 }
