@@ -15,9 +15,10 @@ dependencies:
     - alsa-lib
     - wayland
     - vulkan-loader
+    - clang
 
 environment:
-  RUSTFLAGS: "-Clinker=ld"
+  RUSTFLAGS: "-Clinker=clang -Clink-arg=--ld-path=wild"
 
 steps:
   - name: build and lint
