@@ -18,21 +18,15 @@
         system: with nixpkgs.legacyPackages.${system}; {
           default = mkShell rec {
             nativeBuildInputs = [
-              rustc
-              cargo
-              rustfmt
-              clippy
-              rust-analyzer
               nixfmt
-              nil
+              nixd
               pkg-config
-            ]
-            ++ lib.optionals stdenv.hostPlatform.isLinux [
-              wild
             ];
 
             buildInputs = [
               vulkan-loader
+              vulkan-headers
+              sdl3
             ]
             ++ lib.optionals stdenv.hostPlatform.isLinux [
               alsa-lib

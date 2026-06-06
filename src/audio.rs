@@ -1,417 +1,228 @@
-use std::time::{Duration, Instant};
+use std::f64::consts::PI;
+use std::time::Duration;
 
-use rodio::source::SineWave;
-use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source};
+use rodio::source::Source;
+use rodio::{DeviceSinkBuilder, mixer::Mixer};
 
-use crate::ui::{
-	ArrangementViewData, AudioClipView, MidiClipView, MidiNoteView,
-	TransportState,
-};
+// ── Sample types ──────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug)]
-struct AudioClip {
-	start_beats: f32,
-	duration_beats: f32,
-	frequency_hz: f32,
-	gain: f32,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SampleType {
+    Kick,
+    Snare,
+    HiHat,
+    OpenHat,
+    Bass,
+    SynthLead,
+    Pad,
+    Clap,
 }
 
-#[derive(Clone, Debug)]
-struct MidiClip {
-	start_beats: f32,
-	duration_beats: f32,
-	notes: Vec<MidiNote>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct MidiNote {
-	start_beats: f32,
-	duration_beats: f32,
-	midi_note: u8,
-	velocity: f32,
-}
+// ── Engine ────────────────────────────────────────────────────────────────────
 
 pub struct AudioEngine {
-	device_sink: MixerDeviceSink,
-	players: Vec<Player>,
-	clips: Vec<AudioClip>,
-	midi_clips: Vec<MidiClip>,
-	bpm: f32,
-	is_playing: bool,
-	is_recording: bool,
-	is_looping: bool,
-	record_started_at: Option<Instant>,
-	play_started_at: Option<Instant>,
-	timeline_beats: f32,
+    mixer: Mixer,
 }
 
 impl AudioEngine {
-	pub fn new() -> Result<Self, String> {
-		let mut device_sink = DeviceSinkBuilder::open_default_sink()
-			.map_err(|err| format!("audio output init failed: {err}"))?;
-		device_sink.log_on_drop(false);
+    /// Spin up the audio thread and return an engine backed by it.
+    /// Returns `None` if no audio device is available.
+    pub fn start() -> Option<Self> {
+        let (tx, rx) = std::sync::mpsc::channel::<Mixer>();
 
-		Ok(Self {
-			device_sink,
-			players: Vec::new(),
-			clips: demo_clips(),
-			midi_clips: demo_midi_clips(),
-			bpm: 124.0,
-			is_playing: false,
-			is_recording: false,
-			is_looping: false,
-			record_started_at: None,
-			play_started_at: None,
-			timeline_beats: 0.0,
-		})
-	}
+        std::thread::Builder::new()
+            .name("audio".into())
+            .spawn(move || {
+                match DeviceSinkBuilder::open_default_sink() {
+                    Ok(mut sink) => {
+                        sink.log_on_drop(false);
+                        let _ = tx.send(sink.mixer().clone());
+                        // Keep the sink (and the audio thread) alive forever.
+                        loop {
+                            std::thread::sleep(Duration::from_secs(3600));
+                        }
+                    }
+                    Err(e) => eprintln!("audio: failed to open device — {e}"),
+                }
+            })
+            .ok();
 
-	pub fn play(&mut self) {
-		self.tick();
-		if self.is_playing {
-			return;
-		}
+        rx.recv_timeout(Duration::from_secs(2))
+            .ok()
+            .map(|mixer| Self { mixer })
+    }
 
-		let finished = self.players.iter().all(Player::empty);
-		if self.players.is_empty() || finished {
-			if finished {
-				self.timeline_beats = 0.0;
-			}
-			self.start_new_playback_from(self.timeline_beats);
-			return;
-		}
-
-		for player in &self.players {
-			player.play();
-		}
-		self.play_started_at = Some(Instant::now());
-		self.is_playing = true;
-	}
-
-	pub fn pause(&mut self) {
-		self.timeline_beats = self.current_playhead_beats();
-		for player in &self.players {
-			player.pause();
-		}
-		self.is_playing = false;
-		self.play_started_at = None;
-	}
-
-	pub fn set_bpm(&mut self, bpm: f32) {
-		let next = bpm.clamp(40.0, 240.0);
-		if (next - self.bpm).abs() < f32::EPSILON {
-			return;
-		}
-
-		self.timeline_beats = self.current_playhead_beats();
-		self.bpm = next;
-		if self.is_playing {
-			self.start_new_playback_from(self.timeline_beats);
-		}
-	}
-
-	pub fn bpm(&self) -> f32 {
-		self.bpm
-	}
-
-	pub fn toggle_recording(&mut self) {
-		if !self.is_recording {
-			self.is_recording = true;
-			self.record_started_at = Some(Instant::now());
-			return;
-		}
-
-		self.is_recording = false;
-		let raw_beats = self.record_started_at.take().map_or(4.0, |started| {
-			started.elapsed().as_secs_f32() * self.beats_per_second()
-		});
-		let duration_beats =
-			((raw_beats * 4.0).round() / 4.0).clamp(0.25, 16.0);
-
-		let idx = self.clips.len();
-		let next_start = self
-			.clips
-			.iter()
-			.map(|clip| clip.start_beats + clip.duration_beats)
-			.fold(0.0f32, f32::max);
-		let frequency_hz = 220.0 + (idx % 8) as f32 * 55.0;
-		self.clips.push(AudioClip {
-			start_beats: next_start,
-			duration_beats,
-			frequency_hz,
-			gain: 0.12,
-		});
-
-		if self.is_playing {
-			self.timeline_beats = self.current_playhead_beats();
-			self.start_new_playback_from(self.timeline_beats);
-		}
-	}
-
-	pub fn stop_and_rewind(&mut self) {
-		for player in self.players.drain(..) {
-			player.stop();
-		}
-		self.is_playing = false;
-		self.play_started_at = None;
-		self.timeline_beats = 0.0;
-	}
-
-	pub fn toggle_looping(&mut self) {
-		self.is_looping = !self.is_looping;
-	}
-
-	pub fn transport_state(&self) -> TransportState {
-		let has_pending_audio =
-			self.players.iter().any(|player| !player.empty());
-		TransportState {
-			is_playing: self.is_playing && has_pending_audio,
-			is_recording: self.is_recording,
-			is_looping: self.is_looping,
-		}
-	}
-
-	pub fn tick(&mut self) {
-		if !self.is_playing {
-			return;
-		}
-
-		if self.players.iter().all(Player::empty) {
-			if self.is_looping && self.total_duration_beats() > 0.0 {
-				self.start_new_playback_from(0.0);
-			} else {
-				self.is_playing = false;
-				self.play_started_at = None;
-				self.timeline_beats = self.total_duration_beats();
-			}
-		}
-	}
-
-	pub fn view_data(&self) -> ArrangementViewData {
-		let playhead_beats = self.current_playhead_beats();
-
-		ArrangementViewData {
-			transport: self.transport_state(),
-			bpm: self.bpm,
-			playhead_beats,
-			clips: self
-				.clips
-				.iter()
-				.map(|clip| AudioClipView {
-					start_beats: clip.start_beats,
-					duration_beats: clip.duration_beats,
-					frequency_hz: clip.frequency_hz,
-				})
-				.collect(),
-			midi_clips: self
-				.midi_clips
-				.iter()
-				.map(|clip| MidiClipView {
-					start_beats: clip.start_beats,
-					duration_beats: clip.duration_beats,
-					notes: clip
-						.notes
-						.iter()
-						.map(|note| MidiNoteView {
-							start_beats: note.start_beats,
-							duration_beats: note.duration_beats,
-							midi_note: note.midi_note,
-						})
-						.collect(),
-				})
-				.collect(),
-		}
-	}
-
-	fn start_new_playback_from(&mut self, timeline_beats: f32) {
-		for player in self.players.drain(..) {
-			player.stop();
-		}
-
-		let seconds_per_beat = self.seconds_per_beat();
-		for clip in &self.clips {
-			let clip_end = clip.start_beats + clip.duration_beats;
-			if clip_end <= timeline_beats {
-				continue;
-			}
-
-			let skipped_beats = (timeline_beats - clip.start_beats).max(0.0);
-			let remaining_beats =
-				(clip.duration_beats - skipped_beats).max(0.01);
-			let delay_beats = (clip.start_beats - timeline_beats).max(0.0);
-			let player = Player::connect_new(self.device_sink.mixer());
-			let source = SineWave::new(clip.frequency_hz)
-				.skip_duration(Duration::from_secs_f32(
-					skipped_beats * seconds_per_beat,
-				))
-				.take_duration(Duration::from_secs_f32(
-					remaining_beats * seconds_per_beat,
-				))
-				.delay(Duration::from_secs_f32(delay_beats * seconds_per_beat))
-				.amplify(clip.gain);
-			player.append(source);
-			self.players.push(player);
-		}
-
-		for clip in &self.midi_clips {
-			for note in &clip.notes {
-				let note_start = clip.start_beats + note.start_beats;
-				let note_end = note_start + note.duration_beats;
-				if note_end <= timeline_beats {
-					continue;
-				}
-
-				let skipped_beats = (timeline_beats - note_start).max(0.0);
-				let remaining_beats =
-					(note.duration_beats - skipped_beats).max(0.02);
-				let delay_beats = (note_start - timeline_beats).max(0.0);
-				let frequency_hz = midi_note_to_hz(note.midi_note);
-				let player = Player::connect_new(self.device_sink.mixer());
-				let source = SineWave::new(frequency_hz)
-					.skip_duration(Duration::from_secs_f32(
-						skipped_beats * seconds_per_beat,
-					))
-					.take_duration(Duration::from_secs_f32(
-						remaining_beats * seconds_per_beat,
-					))
-					.delay(Duration::from_secs_f32(
-						delay_beats * seconds_per_beat,
-					))
-					.amplify((0.04 + note.velocity * 0.12).min(0.24));
-				player.append(source);
-				self.players.push(player);
-			}
-		}
-		self.is_playing = true;
-		self.timeline_beats = timeline_beats;
-		self.play_started_at = Some(Instant::now());
-	}
-
-	fn total_duration_beats(&self) -> f32 {
-		let audio_end = self
-			.clips
-			.iter()
-			.map(|clip| clip.start_beats + clip.duration_beats)
-			.fold(0.0, f32::max);
-		let midi_end = self
-			.midi_clips
-			.iter()
-			.flat_map(|clip| {
-				clip.notes.iter().map(|note| {
-					clip.start_beats + note.start_beats + note.duration_beats
-				})
-			})
-			.fold(0.0, f32::max);
-		audio_end.max(midi_end)
-	}
-
-	fn beats_per_second(&self) -> f32 {
-		self.bpm / 60.0
-	}
-
-	fn seconds_per_beat(&self) -> f32 {
-		60.0 / self.bpm
-	}
-
-	fn current_playhead_beats(&self) -> f32 {
-		if self.is_playing {
-			self.timeline_beats
-				+ self.play_started_at.map_or(0.0, |started| {
-					started.elapsed().as_secs_f32() * self.beats_per_second()
-				})
-		} else {
-			self.timeline_beats
-		}
-	}
+    pub fn trigger(&self, sample: SampleType) {
+        let src: Box<dyn Source<Item = f32> + Send> = match sample {
+            SampleType::Kick => Box::new(kick()),
+            SampleType::Snare => Box::new(snare()),
+            SampleType::HiHat => Box::new(hihat_closed()),
+            SampleType::OpenHat => Box::new(hihat_open()),
+            SampleType::Bass => Box::new(bass()),
+            SampleType::SynthLead => Box::new(synth_lead()),
+            SampleType::Pad => Box::new(pad()),
+            SampleType::Clap => Box::new(clap()),
+        };
+        self.mixer.add(src);
+    }
 }
 
-fn demo_clips() -> Vec<AudioClip> {
-	vec![]
+// ── Synthesis primitives ──────────────────────────────────────────────────────
+
+/// A sound source defined by a closure `f(t_seconds) -> f32`.
+struct FnSource {
+    sample_rate: u32,
+    current: u64,
+    total: u64,
+    func: Box<dyn FnMut(f64) -> f32 + Send>,
 }
 
-fn demo_midi_clips() -> Vec<MidiClip> {
-	vec![
-		MidiClip {
-			start_beats: 0.0,
-			duration_beats: 4.0,
-			notes: vec![
-				MidiNote {
-					start_beats: 0.00,
-					duration_beats: 0.50,
-					midi_note: 60,
-					velocity: 0.8,
-				},
-				MidiNote {
-					start_beats: 0.50,
-					duration_beats: 0.50,
-					midi_note: 64,
-					velocity: 0.7,
-				},
-				MidiNote {
-					start_beats: 1.00,
-					duration_beats: 0.50,
-					midi_note: 67,
-					velocity: 0.75,
-				},
-				MidiNote {
-					start_beats: 1.50,
-					duration_beats: 0.50,
-					midi_note: 72,
-					velocity: 0.65,
-				},
-				MidiNote {
-					start_beats: 2.00,
-					duration_beats: 1.00,
-					midi_note: 67,
-					velocity: 0.7,
-				},
-				MidiNote {
-					start_beats: 3.00,
-					duration_beats: 1.00,
-					midi_note: 64,
-					velocity: 0.7,
-				},
-			],
-		},
-		MidiClip {
-			start_beats: 4.0,
-			duration_beats: 4.0,
-			notes: vec![
-				MidiNote {
-					start_beats: 0.00,
-					duration_beats: 0.50,
-					midi_note: 62,
-					velocity: 0.75,
-				},
-				MidiNote {
-					start_beats: 0.50,
-					duration_beats: 0.50,
-					midi_note: 65,
-					velocity: 0.7,
-				},
-				MidiNote {
-					start_beats: 1.00,
-					duration_beats: 0.50,
-					midi_note: 69,
-					velocity: 0.8,
-				},
-				MidiNote {
-					start_beats: 1.50,
-					duration_beats: 0.50,
-					midi_note: 74,
-					velocity: 0.68,
-				},
-				MidiNote {
-					start_beats: 2.00,
-					duration_beats: 2.00,
-					midi_note: 67,
-					velocity: 0.72,
-				},
-			],
-		},
-	]
+impl FnSource {
+    fn new(duration: f64, func: impl FnMut(f64) -> f32 + Send + 'static) -> Self {
+        let sr = 44100u32;
+        Self {
+            sample_rate: sr,
+            current: 0,
+            total: (duration * sr as f64) as u64,
+            func: Box::new(func),
+        }
+    }
 }
 
-fn midi_note_to_hz(midi_note: u8) -> f32 {
-	440.0 * (2.0f32).powf((f32::from(midi_note) - 69.0) / 12.0)
+impl Iterator for FnSource {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        if self.current >= self.total {
+            return None;
+        }
+        let t = self.current as f64 / self.sample_rate as f64;
+        let s = (self.func)(t).clamp(-1.0, 1.0);
+        self.current += 1;
+        Some(s)
+    }
+}
+
+impl Source for FnSource {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> std::num::NonZero<u16> {
+        std::num::NonZero::new(1).unwrap()
+    }
+    fn sample_rate(&self) -> std::num::NonZero<u32> {
+        std::num::NonZero::new(self.sample_rate).unwrap()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+}
+
+// ── Instrument voices ─────────────────────────────────────────────────────────
+
+/// 808-style kick: pitch-swept sine with exponential decay.
+fn kick() -> impl Source<Item = f32> + Send {
+    FnSource::new(0.38, |t| {
+        let pitch = 110.0 * (-t * 22.0).exp() + 42.0;
+        let env = (-t * 11.0).exp();
+        ((2.0 * PI * pitch * t).sin() * env * 0.9) as f32
+    })
+}
+
+/// Snare: short noise burst + tonal body.
+fn snare() -> impl Source<Item = f32> + Send {
+    let mut rng = 0xdeadbeef_u64;
+    FnSource::new(0.22, move |t| {
+        rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let noise = (rng >> 33) as f64 / (1u64 << 31) as f64 - 1.0;
+        let tone = (2.0 * PI * 185.0 * t).sin();
+        let env_noise = (-t * 28.0).exp();
+        let env_tone = (-t * 18.0).exp();
+        ((noise * env_noise * 0.65 + tone * env_tone * 0.35) * 0.85) as f32
+    })
+}
+
+/// Closed hi-hat: high-frequency noise, very short.
+fn hihat_closed() -> impl Source<Item = f32> + Send {
+    let mut rng = 0xc0ffee_u64;
+    FnSource::new(0.055, move |t| {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let noise = (rng >> 33) as f64 / (1u64 << 31) as f64 - 1.0;
+        let env = (-t * 90.0).exp();
+        (noise * env * 0.45) as f32
+    })
+}
+
+/// Open hi-hat: same but longer decay.
+fn hihat_open() -> impl Source<Item = f32> + Send {
+    let mut rng = 0xface_u64;
+    FnSource::new(0.35, move |t| {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let noise = (rng >> 33) as f64 / (1u64 << 31) as f64 - 1.0;
+        let env = (-t * 12.0).exp();
+        (noise * env * 0.4) as f32
+    })
+}
+
+/// Sub bass: low sine with slow decay.
+fn bass() -> impl Source<Item = f32> + Send {
+    FnSource::new(0.55, |t| {
+        let pitch = 65.0 * (-t * 6.0).exp() + 38.0;
+        let env = (-t * 4.5).exp();
+        ((2.0 * PI * pitch * t).sin() * env * 0.85) as f32
+    })
+}
+
+/// Synth lead: detuned sawtooth (sum of harmonics), plucky.
+fn synth_lead() -> impl Source<Item = f32> + Send {
+    FnSource::new(0.28, |t| {
+        let f0 = 440.0_f64;
+        let detune = 1.007_f64;
+        let env = (-t * 12.0).exp() * 0.55;
+        let mut s = 0.0_f64;
+        for k in 1..=8_u32 {
+            let kf = k as f64;
+            s += ((2.0 * PI * f0 * kf * t).sin() + (2.0 * PI * f0 * detune * kf * t).sin() * 0.6)
+                / kf;
+        }
+        (s * env * 0.3) as f32
+    })
+}
+
+/// Pad: soft chord with attack, long release.
+fn pad() -> impl Source<Item = f32> + Send {
+    // C4 minor triad: C4, Eb4, G4
+    let freqs = [261.63_f64, 311.13, 392.0];
+    FnSource::new(1.2, move |t| {
+        let attack = (t * 4.0).min(1.0);
+        let release = (-t * 1.5).exp();
+        let env = attack * release * 0.25;
+        let s: f64 = freqs
+            .iter()
+            .enumerate()
+            .map(|(i, &f)| {
+                let amp = 1.0 - i as f64 * 0.2;
+                (2.0 * PI * f * t).sin() * amp
+            })
+            .sum();
+        (s * env) as f32
+    })
+}
+
+/// Clap: layered noise bursts.
+fn clap() -> impl Source<Item = f32> + Send {
+    let mut rng = 0xabad1dea_u64;
+    FnSource::new(0.18, move |t| {
+        rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let noise = (rng >> 33) as f64 / (1u64 << 31) as f64 - 1.0;
+        // Three overlapping bursts simulating hand clap.
+        let b0 = (-((t - 0.000) * 60.0).powi(2)).exp();
+        let b1 = (-((t - 0.012) * 55.0).powi(2)).exp();
+        let b2 = (-((t - 0.026) * 40.0).powi(2)).exp();
+        let env = (b0 + b1 * 0.7 + b2 * 0.5) * (-t * 18.0).exp();
+        (noise * env * 0.75) as f32
+    })
 }

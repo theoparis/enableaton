@@ -1,3 +1,4 @@
 target/
 .DS_Store
 .cache/
+.claude/settings.local.json
