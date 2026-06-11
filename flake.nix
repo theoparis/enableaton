@@ -21,12 +21,15 @@
               nixfmt
               nixd
               pkg-config
+              rust-analyzer
+              rustfmt
+              cargo
+              clippy 
             ];
 
             buildInputs = [
               vulkan-loader
-              vulkan-headers
-              sdl3
+              libGL 
             ]
             ++ lib.optionals stdenv.hostPlatform.isLinux [
               alsa-lib
