@@ -109,6 +109,7 @@ impl Daw {
             }
 
             // Pattern blocks
+            let active_p_idx = Daw::active_pattern_idx(track, play_pos);
             for p_idx in 0..track.patterns.len() {
                 let pat = &track.patterns[p_idx];
                 let x = pat.start as f32 * BEAT_PX;
@@ -118,6 +119,7 @@ impl Daw {
                 let move_id = SharedString::from(format!("pat-{t_idx}-{p_idx}"));
                 let pat_len = pat.len;
                 let name_clone = track_name.clone();
+                let is_active = active_p_idx == Some(p_idx);
 
                 let block = div()
                     .absolute()
@@ -125,22 +127,22 @@ impl Daw {
                     .top(px(3.))
                     .w(px(w))
                     .h(px(TRACK_H - 6.))
-                    .bg(rgb(blk_color))
+                    .bg(rgb(if is_active && !muted {
+                        // slightly lighten the block when it's the playing clip
+                        (blk_color & 0x00fefefe).saturating_add(0x00101820)
+                    } else {
+                        blk_color
+                    }))
                     .rounded_sm()
                     .border_l_2()
-                    .border_color(rgb(if muted { TEXT_DIM } else { ACCENT }))
+                    .border_color(rgb(if is_active {
+                        PLAYHEAD
+                    } else if muted {
+                        TEXT_DIM
+                    } else {
+                        ACCENT
+                    }))
                     .overflow_hidden()
-                    // Sheen line at top
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .h(px(1.))
-                            .bg(rgb(0xffffff))
-                            .opacity(0.08),
-                    )
                     // Label: name + length, clipped to block bounds
                     .child(if w >= 44.0 {
                         div()
@@ -214,8 +216,9 @@ impl Daw {
                         MouseButton::Left,
                         cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
                             let mx = f32::from(ev.position.x);
+                            let scroll_x = f32::from(this.pattern_scroll.offset().x);
                             let pat = &this.tracks[t_idx].patterns[p_idx];
-                            let rel = mx - HEADER_W - pat.start as f32 * BEAT_PX;
+                            let rel = mx - HEADER_W + scroll_x - pat.start as f32 * BEAT_PX;
                             if rel < pat.len as f32 * BEAT_PX - 6.0 {
                                 this.drag = Some(crate::models::DragState {
                                     track_idx: t_idx,
@@ -249,10 +252,12 @@ impl Daw {
             pattern_col = pattern_col.child(row);
         }
 
+        let scroll_handle = self.pattern_scroll.clone();
         div()
             .id("pattern-scroll")
             .flex_1()
             .overflow_x_scroll()
+            .track_scroll(&scroll_handle)
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
                 if ev.pressed_button != Some(MouseButton::Left) {
                     return;

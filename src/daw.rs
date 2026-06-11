@@ -1,4 +1,4 @@
-use gpui::{AppContext, Context, Task};
+use gpui::{AppContext, Context, ScrollHandle, Task, point, px};
 use std::time::Duration;
 
 use crate::audio::{AudioEngine, SampleType};
@@ -23,6 +23,8 @@ pub struct Daw {
     pub selected_track: Option<usize>,
     /// (mouse_start_y, bpm_at_drag_start) for the BPM drag slider.
     pub bpm_drag_origin: Option<(f32, u32)>,
+    /// Scroll handle for the pattern editor — used to auto-follow the playhead.
+    pub pattern_scroll: ScrollHandle,
 }
 
 impl Daw {
@@ -95,6 +97,7 @@ impl Daw {
             _tick_task: None,
             selected_track: None,
             bpm_drag_origin: None,
+            pattern_scroll: ScrollHandle::default(),
             tracks: vec![
                 Track {
                     name: "Kick".into(),
@@ -203,6 +206,13 @@ impl Daw {
                             }
                         }
 
+                        // Auto-scroll the song editor to keep the playhead visible.
+                        let ph_x = this.play_pos * BEAT_PX;
+                        // Scroll so the playhead sits ~150px in from the left.
+                        let target_offset = (ph_x - 150.0).max(0.0);
+                        this.pattern_scroll
+                            .set_offset(point(px(target_offset), px(0.)));
+
                         cx.notify();
                         true
                     })
@@ -230,7 +240,10 @@ impl Daw {
     }
 
     pub fn scrub_to(&mut self, window_x: f32) {
-        let beat = ((window_x - HEADER_W) / BEAT_PX).max(0.0);
+        // Ruler events use window coordinates; add the horizontal scroll offset so
+        // clicking at the correct bar works even when the view is scrolled right.
+        let scroll_x = f32::from(self.pattern_scroll.offset().x);
+        let beat = ((window_x - HEADER_W + scroll_x) / BEAT_PX).max(0.0);
         let total = (self.total_bars * self.beats_per_bar) as f32;
         self.play_pos = beat.min(total - 0.001);
     }
