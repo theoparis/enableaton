@@ -18,6 +18,35 @@ pub enum SampleType {
     Clap,
 }
 
+impl SampleType {
+    pub fn short_label(self) -> &'static str {
+        match self {
+            SampleType::Kick => "BD",
+            SampleType::Snare => "SD",
+            SampleType::HiHat => "HH",
+            SampleType::OpenHat => "OH",
+            SampleType::Bass => "BS",
+            SampleType::SynthLead => "SY",
+            SampleType::Pad => "PD",
+            SampleType::Clap => "CP",
+        }
+    }
+
+    /// Background color for the sample-type badge.
+    pub fn badge_color(self) -> u32 {
+        match self {
+            SampleType::Kick
+            | SampleType::Snare
+            | SampleType::HiHat
+            | SampleType::OpenHat
+            | SampleType::Clap => 0x1e3550,
+            SampleType::Bass => 0x1a2a6a,
+            SampleType::SynthLead => 0x143d35,
+            SampleType::Pad => 0x3a2050,
+        }
+    }
+}
+
 // ── Engine ────────────────────────────────────────────────────────────────────
 
 pub struct AudioEngine {

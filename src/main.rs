@@ -2,6 +2,7 @@ mod audio;
 mod daw;
 mod models;
 mod theme;
+mod ui;
 
 use gpui::{Bounds, KeyBinding, WindowBounds, WindowOptions, actions, prelude::*, px, size};
 

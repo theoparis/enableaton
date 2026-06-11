@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 gpui = { git = "https://github.com/gpui-ce/gpui-ce", version = "0.2.2" }
-gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", version = "0.1.0", features = ["x11", "runtime_shaders"] }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", version = "0.1.0", features = ["x11", "runtime_shaders", "font-kit"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
 
 [profile.dev.package."*"]

@@ -5,6 +5,7 @@ use crate::theme::STEPS;
 pub struct Pattern {
     pub start: usize,
     pub len: usize,
+    pub steps: [bool; STEPS],
 }
 
 #[derive(Clone, Debug)]
@@ -13,7 +14,6 @@ pub struct Track {
     pub color: u32,
     pub muted: bool,
     pub patterns: Vec<Pattern>,
-    pub steps: [bool; STEPS],
     pub sample: SampleType,
 }
 
