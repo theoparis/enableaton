@@ -34,7 +34,7 @@ impl Daw {
                             .text_color(rgb(ACCENT))
                             .child("▤"),
                     )
-                    .child(dim("SONG EDITOR")),
+                    .child(dim("Tracks")),
             );
 
         for idx in 0..n_tracks {
