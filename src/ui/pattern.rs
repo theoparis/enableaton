@@ -123,8 +123,8 @@ impl Daw {
 
                 let block = div()
                     .absolute()
-                    .left(px(x))
-                    .top(px(3.))
+                    .left_0()
+                    .top_0()
                     .w(px(w))
                     .h(px(TRACK_H - 6.))
                     .bg(rgb(if is_active && !muted {

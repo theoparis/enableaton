@@ -10,14 +10,10 @@ dependencies:
         - cargo
         - rustfmt
         - clippy
-        - wild
         - pkg-config
         - alsa-lib
         - wayland
         - vulkan-loader
-
-environment:
-    RUSTFLAGS: "-Clinker=ld"
 
 steps:
     - name: build and lint

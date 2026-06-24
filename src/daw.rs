@@ -1,5 +1,5 @@
 use gpui::{AppContext, Context, ScrollHandle, Task, point, px};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::audio::{AudioEngine, SampleType};
 use crate::models::{DragKind, DragState, Pattern, Track};
@@ -160,6 +160,7 @@ impl Daw {
     }
 
     pub fn start_tick(&mut self, cx: &mut Context<Self>) {
+        let mut last_tick = Instant::now();
         let task = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_spawn(async {
@@ -172,7 +173,10 @@ impl Daw {
                         if !this.playing {
                             return false;
                         }
-                        let beats_per_tick = this.bpm as f32 / 60_000.0 * 8.0;
+                        let now = Instant::now();
+                        let elapsed_secs = (now - last_tick).as_secs_f32();
+                        last_tick = now;
+                        let beats_per_tick = this.bpm as f32 / 60.0 * elapsed_secs;
                         this.play_pos += beats_per_tick;
                         let total = (this.total_bars * this.beats_per_bar) as f32;
                         if this.play_pos >= total {
