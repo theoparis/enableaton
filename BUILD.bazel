@@ -71,6 +71,7 @@ cc_binary(
         ":skia_app",
         ":skia_yoga_ui",
         "@glfw//:glfw",
+        "@openal//:openal",
     ],
 )
 

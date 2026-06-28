@@ -302,6 +302,19 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
+    "//:openal_ext.bzl%openal_ext": {
+      "general": {
+        "bzlTransitiveDigest": "q9ZIgrb6U1i+F3Nh13NVUoYactWKIjVi8F38gWxqJAI=",
+        "usagesDigest": "sroEMqlcszKooz0bnFguj0/6eUkuvHOfEF/1aLpejkg=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "openal": {
+            "repoRuleId": "@@//:openal_ext.bzl%openal_repository",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "//:skia_ext.bzl%skia_ext": {
       "general": {
         "bzlTransitiveDigest": "xnRmWdD3Q0Y271u55xqlGvjPaR/j+tzCL+5AMug7b4I=",

@@ -33,3 +33,7 @@ bazel_dep(name = "skia_user_config")
 
 skia_ext = use_extension("//:skia_ext.bzl", "skia_ext")
 use_repo(skia_ext, "skia", "dawn", "delaunator", "dng_sdk", "egl_registry", "expat", "freetype", "harfbuzz", "icu", "icu4x", "imgui", "jinja2", "libavif", "libgav1", "libjpeg_turbo", "libjxl", "libpng", "libwebp", "libyuv", "markupsafe", "opengl_registry", "perfetto", "piex", "spirv_cross", "spirv_headers", "spirv_tools", "vello", "vulkan_headers", "vulkan_tools", "vulkan_utility_libraries", "vulkanmemoryallocator", "wuffs", "zlib")
+
+openal_ext = use_extension("//:openal_ext.bzl", "openal_ext")
+use_repo(openal_ext, "openal")
+
