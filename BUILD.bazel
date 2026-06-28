@@ -66,6 +66,8 @@ cc_binary(
         "src/ui/daw_state.h",
         "src/ui/draw_node.h",
         "src/ui/input.h",
+        "src/audio/audio_engine.cc",
+        "src/audio/audio_engine.h",
     ],
     deps = [
         ":skia_app",

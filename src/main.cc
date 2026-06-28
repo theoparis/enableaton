@@ -19,6 +19,7 @@
 #include "ui/draw_node.h"
 #include "ui/input.h"
 #include "ui/node.h"
+#include "audio/audio_engine.h"
 
 namespace {
 
@@ -187,6 +188,9 @@ int main(int argc, char** argv) {
   // ─── DAW State ──────────────────────────────────────────────────────
   DawState daw;
   daw.InitDefaultTracks();
+
+  skui::audio::AudioEngine audioEngine;
+  audioEngine.Initialize();
 
   // Mouse state tracking
   bool mouse_down = false;
@@ -791,6 +795,7 @@ int main(int argc, char** argv) {
         std::chrono::duration<double>(now - last_frame_time).count();
     last_frame_time = now;
     daw.AdvancePlayhead(dt);
+    audioEngine.Update(daw);
 
     // Handle sequencer clicks in the bottom panel
     // The bottom panel's top-left is at (0, size.height() - kBottomPanelHeight)
@@ -812,6 +817,9 @@ int main(int argc, char** argv) {
           static int last_toggled_step = -1;
           if (drum != last_toggled_drum || step != last_toggled_step) {
             daw.SelectedTrack()->drum_pattern.Toggle(drum, step);
+            if (daw.SelectedTrack()->drum_pattern.IsActive(drum, step)) {
+              audioEngine.PlayDrum(static_cast<skui::ui::DrumType>(drum));
+            }
             last_toggled_drum = drum;
             last_toggled_step = step;
           }
