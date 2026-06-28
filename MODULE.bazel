@@ -36,4 +36,3 @@ use_repo(skia_ext, "skia", "dawn", "delaunator", "dng_sdk", "egl_registry", "exp
 
 openal_ext = use_extension("//:openal_ext.bzl", "openal_ext")
 use_repo(openal_ext, "openal")
-

@@ -304,7 +304,7 @@
   "moduleExtensions": {
     "//:openal_ext.bzl%openal_ext": {
       "general": {
-        "bzlTransitiveDigest": "q9ZIgrb6U1i+F3Nh13NVUoYactWKIjVi8F38gWxqJAI=",
+        "bzlTransitiveDigest": "Ueqxof2U+BXwAWtCUTl/laUeDK/Puy9P2yeYOlH4/rk=",
         "usagesDigest": "sroEMqlcszKooz0bnFguj0/6eUkuvHOfEF/1aLpejkg=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
