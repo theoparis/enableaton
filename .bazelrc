@@ -1,0 +1,6 @@
+common --incompatible_autoload_externally=+CcToolchainConfigInfo,+py_library,+py_binary,+cc_library,+cc_binary,+cc_test
+build --repo_env=CC=clang
+build --repo_env=CXX=clang++
+build --action_env=CC=clang
+build --action_env=CXX=clang++
+build --per_file_copt=.*\\.(cc|cpp|cxx|mm)$@-std=c++20

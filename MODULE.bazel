@@ -1,0 +1,35 @@
+module(
+    name = "skia_experiment",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "apple_support", version = "2.6.1")
+bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(
+    name = "rules_go",
+    version = "0.61.0",
+)
+bazel_dep(name = "glfw", version = "3.4.0.bcr.3")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_license", version = "1.0.0")
+bazel_dep(name = "rules_python", version = "2.1.0-rc0")
+bazel_dep(name = "rules_rust", version = "0.71.1")
+bazel_dep(name = "rules_shell", version = "0.8.0")
+bazel_dep(name = "yoga", version = "2.0.1")
+
+bazel_dep(name = "hedron_compile_commands", dev_dependency = True)
+git_override(
+    module_name = "hedron_compile_commands",
+    commit = "1f9360db1834d115c48279d38a97f30d64d3fd4a",
+    remote = "https://github.com/helly25/bazel-compile-commands-extractor.git",
+)
+
+local_path_override(
+    module_name = "skia_user_config",
+    path = "custom_skia_config",
+)
+bazel_dep(name = "skia_user_config")
+
+skia_ext = use_extension("//:skia_ext.bzl", "skia_ext")
+use_repo(skia_ext, "skia", "dawn", "delaunator", "dng_sdk", "egl_registry", "expat", "freetype", "harfbuzz", "icu", "icu4x", "imgui", "jinja2", "libavif", "libgav1", "libjpeg_turbo", "libjxl", "libpng", "libwebp", "libyuv", "markupsafe", "opengl_registry", "perfetto", "piex", "spirv_cross", "spirv_headers", "spirv_tools", "vello", "vulkan_headers", "vulkan_tools", "vulkan_utility_libraries", "vulkanmemoryallocator", "wuffs", "zlib")

@@ -1,0 +1,5 @@
+--- a/src/gpu/graphite/dawn/BUILD.bazel
++++ b/src/gpu/graphite/dawn/BUILD.bazel
+@@ -82,1 +82,1 @@
+-    visibility = ["//:__pkg__"],
++    visibility = ["//:__pkg__", "@@//:__pkg__"],

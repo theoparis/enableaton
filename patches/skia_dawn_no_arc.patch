@@ -1,0 +1,19 @@
+diff --git a/bazel/external/dawn/BUILD.bazel b/bazel/external/dawn/BUILD.bazel
+index 1234567..89abcde 100644
+--- a/bazel/external/dawn/BUILD.bazel
++++ b/bazel/external/dawn/BUILD.bazel
+@@ -357,3 +357,3 @@ objc_library(
+     srcs = COMMON_APPLE_SRCS + COMMON_APPLE_PRIV_HDRS,
+-    copts = DAWN_COPTS,
++    copts = DAWN_COPTS + ["-fno-objc-arc"],
+     defines = DAWN_DEBUG_DEFINES,
+@@ -420,3 +420,3 @@ objc_library(
+     srcs = SYSTEM_UTILS_APPLE_SRCS + SYSTEM_UTILS_APPLE_PRIV_HDRS,
+-    copts = DAWN_COPTS,
++    copts = DAWN_COPTS + ["-fno-objc-arc"],
+     deps = [
+@@ -506,3 +506,3 @@ objc_library(
+     hdrs = [],
+-    copts = DAWN_COPTS,
++    copts = DAWN_COPTS + ["-fno-objc-arc"],
+     defines = TINT_WGSL_DEFINES + DAWN_METAL_DEFINES,

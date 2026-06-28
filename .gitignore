@@ -1,0 +1,4 @@
+compile_commands.json
+/bazel-*
+/external
+.codex

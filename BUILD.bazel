@@ -1,0 +1,82 @@
+load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
+cc_library(
+    name = "skia_app_apple",
+    srcs = [
+        "src/skia_app_apple.cc",
+        "src/skia_app_internal.h",
+    ],
+    copts = ["-x", "objective-c++"],
+    deps = [
+        "@dawn//:dawn",
+        "@glfw//:glfw",
+    ],
+)
+
+cc_library(
+    name = "skia_app",
+    srcs = [
+        "src/skia_app.cc",
+        "src/skia_app_internal.h",
+        "src/ui/input.h",
+    ],
+    hdrs = ["src/skia_app.h"],
+    defines = [
+        "SK_DAWN",
+        "SK_GRAPHITE",
+    ],
+    deps = [
+        "@glfw//:glfw",
+        "@dawn//:dawn",
+        "@skia//src/gpu/graphite/dawn:graphite_native_dawn",
+    ] + select({
+        "@platforms//os:macos": [":skia_app_apple"],
+        "@platforms//os:ios": [":skia_app_apple"],
+        "//conditions:default": [],
+    }),
+)
+
+cc_library(
+    name = "skia_yoga_ui",
+    srcs = ["src/ui/node.cc"],
+    hdrs = ["src/ui/node.h"],
+    deps = [
+        "@skia//:core",
+        "@yoga//:yoga",
+    ] + select({
+        "@platforms//os:macos": [
+            "@skia//:fontmgr_coretext",
+        ],
+        "@platforms//os:ios": [
+            "@skia//:fontmgr_coretext",
+        ],
+        "//conditions:default": [
+            "@skia//:fontmgr_fontconfig",
+            "@skia//:freetype_support",
+        ],
+    }),
+)
+
+cc_binary(
+    name = "enableaton",
+    srcs = [
+        "src/main.cc",
+        "src/ui/daw_colors.h",
+        "src/ui/daw_state.h",
+        "src/ui/draw_node.h",
+        "src/ui/input.h",
+    ],
+    deps = [
+        ":skia_app",
+        ":skia_yoga_ui",
+        "@glfw//:glfw",
+    ],
+)
+
+refresh_compile_commands(
+    name = "refresh_compile_commands",
+    targets = {
+        "//:enableaton": "",
+    },
+)
