@@ -44,7 +44,9 @@ impl Render for Daw {
         } else {
             match self.selected_track.map(|i| &self.tracks[i].instrument) {
                 Some(Instrument::DrumRack(_)) => self.render_beat_panel(cx).into_any_element(),
-                Some(Instrument::Sampler(_)) => self.render_piano_roll(cx).into_any_element(),
+                Some(Instrument::Sampler(_) | Instrument::Plugin(_)) => {
+                    self.render_piano_roll(cx).into_any_element()
+                }
                 None => div().flex_none().into_any_element(),
             }
         };
@@ -125,8 +127,8 @@ pub(super) fn transport_btn(
         )
 }
 
-/// Small colored pill showing a 2-char sample-type abbreviation.
-pub(super) fn sample_badge(label: &'static str, bg_color: u32) -> impl IntoElement {
+/// Small colored pill showing a 2-char instrument-type abbreviation.
+pub(super) fn sample_badge(label: impl Into<SharedString>, bg_color: u32) -> impl IntoElement {
     div()
         .flex_none()
         .px_1()
@@ -135,5 +137,5 @@ pub(super) fn sample_badge(label: &'static str, bg_color: u32) -> impl IntoEleme
         .text_xs()
         .font_weight(FontWeight::BOLD)
         .text_color(rgb(0xc8dff0))
-        .child(SharedString::from(label))
+        .child(label.into())
 }

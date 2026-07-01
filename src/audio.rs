@@ -6,7 +6,7 @@ use std::time::Duration;
 use rodio::source::Source;
 use rodio::{DeviceSinkBuilder, mixer::Mixer};
 
-// ── Sample types ──────────────────────────────────────────────────────────────
+// ── Sample types (percussion only) ───────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SampleType {
@@ -14,9 +14,6 @@ pub enum SampleType {
     Snare,
     HiHat,
     OpenHat,
-    Bass,
-    SynthLead,
-    Pad,
     Clap,
 }
 
@@ -27,25 +24,209 @@ impl SampleType {
             SampleType::Snare => "SD",
             SampleType::HiHat => "HH",
             SampleType::OpenHat => "OH",
-            SampleType::Bass => "BS",
-            SampleType::SynthLead => "SY",
-            SampleType::Pad => "PD",
             SampleType::Clap => "CP",
         }
     }
 
-    /// Background color for the sample-type badge.
     pub fn badge_color(self) -> u32 {
-        match self {
-            SampleType::Kick
-            | SampleType::Snare
-            | SampleType::HiHat
-            | SampleType::OpenHat
-            | SampleType::Clap => 0x1e3550,
-            SampleType::Bass => 0x1a2a6a,
-            SampleType::SynthLead => 0x143d35,
-            SampleType::Pad => 0x3a2050,
+        0x1e3550
+    }
+}
+
+// ── Instrument plugin trait ───────────────────────────────────────────────────
+
+pub trait InstrumentPlugin: Send + Sync {
+    fn short_label(&self) -> &str;
+    fn badge_color(&self) -> u32;
+    /// Synthesize one note at `midi_pitch` (A4 = 69 = 440 Hz).
+    fn render_note(&self, midi_pitch: u8) -> Box<dyn Source<Item = f32> + Send>;
+}
+
+// ── Wavetable synthesizer ─────────────────────────────────────────────────────
+
+pub enum WaveShape {
+    Sine,
+    Saw,
+    Square,
+    Triangle,
+}
+
+const WAVETABLE_SIZE: usize = 2048;
+
+#[allow(dead_code)]
+pub struct WavetableSynth {
+    pub wave_shape: WaveShape,
+    pub attack: f32,
+    pub decay: f32,
+    pub sustain: f32,
+    pub release: f32,
+    /// Duration the note is "held" before the release phase begins.
+    pub note_len: f32,
+    pub amplitude: f32,
+    label: &'static str,
+    color: u32,
+    table: Arc<Vec<f32>>,
+}
+
+impl WavetableSynth {
+    pub fn new(shape: WaveShape, label: &'static str, color: u32) -> Self {
+        let table = Arc::new(Self::build_table(&shape));
+        Self {
+            wave_shape: shape,
+            attack: 0.01,
+            decay: 0.1,
+            sustain: 0.7,
+            release: 0.3,
+            note_len: 0.5,
+            amplitude: 0.5,
+            label,
+            color,
+            table,
         }
+    }
+
+    pub fn with_adsr(mut self, attack: f32, decay: f32, sustain: f32, release: f32) -> Self {
+        self.attack = attack;
+        self.decay = decay;
+        self.sustain = sustain;
+        self.release = release;
+        self
+    }
+
+    pub fn with_note_len(mut self, note_len: f32) -> Self {
+        self.note_len = note_len;
+        self
+    }
+
+    pub fn with_amplitude(mut self, amplitude: f32) -> Self {
+        self.amplitude = amplitude;
+        self
+    }
+
+    fn build_table(shape: &WaveShape) -> Vec<f32> {
+        (0..WAVETABLE_SIZE)
+            .map(|i| {
+                let p = i as f64 / WAVETABLE_SIZE as f64;
+                match shape {
+                    WaveShape::Sine => (2.0 * PI * p).sin() as f32,
+                    WaveShape::Saw => (2.0 * p - 1.0) as f32,
+                    WaveShape::Square => {
+                        if p < 0.5 {
+                            1.0
+                        } else {
+                            -1.0
+                        }
+                    }
+                    WaveShape::Triangle => {
+                        let t = p * 2.0;
+                        if t < 1.0 {
+                            (2.0 * t - 1.0) as f32
+                        } else {
+                            (3.0 - 2.0 * t) as f32
+                        }
+                    }
+                }
+            })
+            .collect()
+    }
+}
+
+impl InstrumentPlugin for WavetableSynth {
+    fn short_label(&self) -> &str {
+        self.label
+    }
+
+    fn badge_color(&self) -> u32 {
+        self.color
+    }
+
+    fn render_note(&self, midi_pitch: u8) -> Box<dyn Source<Item = f32> + Send> {
+        let freq = 440.0 * 2.0_f64.powf((midi_pitch as f64 - 69.0) / 12.0);
+        let sr = 44100_u32;
+        let total = ((self.note_len + self.release) * sr as f32) as u64;
+        Box::new(WavetableSource {
+            table: Arc::clone(&self.table),
+            phase: 0.0,
+            phase_inc: freq / sr as f64,
+            current: 0,
+            total,
+            sample_rate: sr,
+            attack: self.attack,
+            decay: self.decay,
+            sustain: self.sustain,
+            release: self.release,
+            note_len: self.note_len,
+            amplitude: self.amplitude,
+        })
+    }
+}
+
+struct WavetableSource {
+    table: Arc<Vec<f32>>,
+    phase: f64,
+    phase_inc: f64,
+    current: u64,
+    total: u64,
+    sample_rate: u32,
+    attack: f32,
+    decay: f32,
+    sustain: f32,
+    release: f32,
+    note_len: f32,
+    amplitude: f32,
+}
+
+impl WavetableSource {
+    fn envelope(&self, t: f32) -> f32 {
+        if t < self.attack {
+            t / self.attack
+        } else if t < self.attack + self.decay {
+            let dt = (t - self.attack) / self.decay;
+            1.0 - dt * (1.0 - self.sustain)
+        } else if t < self.note_len {
+            self.sustain
+        } else {
+            let dt = ((t - self.note_len) / self.release).min(1.0);
+            self.sustain * (1.0 - dt)
+        }
+    }
+}
+
+impl Iterator for WavetableSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.current >= self.total {
+            return None;
+        }
+        let t = self.current as f32 / self.sample_rate as f32;
+
+        let n = self.table.len() as f64;
+        let idx = self.phase.fract() * n;
+        let i0 = idx.floor() as usize % self.table.len();
+        let i1 = (i0 + 1) % self.table.len();
+        let frac = (idx - idx.floor()) as f32;
+        let sample = self.table[i0] * (1.0 - frac) + self.table[i1] * frac;
+
+        let out = (sample * self.envelope(t) * self.amplitude).clamp(-1.0, 1.0);
+        self.phase += self.phase_inc;
+        self.current += 1;
+        Some(out)
+    }
+}
+
+impl Source for WavetableSource {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> std::num::NonZero<u16> {
+        std::num::NonZero::new(1).unwrap()
+    }
+    fn sample_rate(&self) -> std::num::NonZero<u32> {
+        std::num::NonZero::new(self.sample_rate).unwrap()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
     }
 }
 
@@ -64,18 +245,15 @@ impl AudioEngine {
 
         std::thread::Builder::new()
             .name("audio".into())
-            .spawn(move || {
-                match DeviceSinkBuilder::open_default_sink() {
-                    Ok(mut sink) => {
-                        sink.log_on_drop(false);
-                        let _ = tx.send(sink.mixer().clone());
-                        // Keep the sink (and the audio thread) alive forever.
-                        loop {
-                            std::thread::sleep(Duration::from_secs(3600));
-                        }
+            .spawn(move || match DeviceSinkBuilder::open_default_sink() {
+                Ok(mut sink) => {
+                    sink.log_on_drop(false);
+                    let _ = tx.send(sink.mixer().clone());
+                    loop {
+                        std::thread::sleep(Duration::from_secs(3600));
                     }
-                    Err(e) => eprintln!("audio: failed to open device — {e}"),
                 }
+                Err(e) => eprintln!("audio: failed to open device — {e}"),
             })
             .ok();
 
@@ -93,44 +271,27 @@ impl AudioEngine {
     }
 
     pub fn trigger(&self, sample: SampleType) {
-        self.trigger_pitched(sample, None);
-    }
-
-    /// Trigger a sample optionally pitch-shifted to `midi_pitch`.
-    /// The base pitch for each synthesized instrument is hard-coded to match its
-    /// natural frequency; passing `None` plays it at the original pitch.
-    pub fn trigger_pitched(&self, sample: SampleType, midi_pitch: Option<u8>) {
         let vol = f32::from_bits(self.master_vol.load(Ordering::Relaxed));
-
-        let speed = midi_pitch
-            .map(|p| {
-                let base: f32 = match sample {
-                    SampleType::Bass => 36.0,
-                    SampleType::SynthLead => 64.0,
-                    SampleType::Pad => 55.0,
-                    _ => return 1.0_f32,
-                };
-                2.0_f32.powf((p as f32 - base) / 12.0)
-            })
-            .unwrap_or(1.0);
-
         let src: Box<dyn Source<Item = f32> + Send> = match sample {
-            SampleType::Kick => Box::new(kick().speed(speed).amplify(vol)),
-            SampleType::Snare => Box::new(snare().speed(speed).amplify(vol)),
-            SampleType::HiHat => Box::new(hihat_closed().speed(speed).amplify(vol)),
-            SampleType::OpenHat => Box::new(hihat_open().speed(speed).amplify(vol)),
-            SampleType::Bass => Box::new(bass().speed(speed).amplify(vol)),
-            SampleType::SynthLead => Box::new(synth_lead().speed(speed).amplify(vol)),
-            SampleType::Pad => Box::new(pad().speed(speed).amplify(vol)),
-            SampleType::Clap => Box::new(clap().speed(speed).amplify(vol)),
+            SampleType::Kick => Box::new(kick().amplify(vol)),
+            SampleType::Snare => Box::new(snare().amplify(vol)),
+            SampleType::HiHat => Box::new(hihat_closed().amplify(vol)),
+            SampleType::OpenHat => Box::new(hihat_open().amplify(vol)),
+            SampleType::Clap => Box::new(clap().amplify(vol)),
         };
         self.mixer.add(src);
+    }
+
+    pub fn trigger_plugin(&self, plugin: &dyn InstrumentPlugin, midi_pitch: Option<u8>) {
+        let pitch = midi_pitch.unwrap_or(60);
+        let vol = f32::from_bits(self.master_vol.load(Ordering::Relaxed));
+        let src = plugin.render_note(pitch);
+        self.mixer.add(src.amplify(vol));
     }
 }
 
 // ── Synthesis primitives ──────────────────────────────────────────────────────
 
-/// A sound source defined by a closure `f(t_seconds) -> f32`.
 struct FnSource {
     sample_rate: u32,
     current: u64,
@@ -178,9 +339,8 @@ impl Source for FnSource {
     }
 }
 
-// ── Instrument voices ─────────────────────────────────────────────────────────
+// ── Percussion voices ─────────────────────────────────────────────────────────
 
-/// 808-style kick: pitch-swept sine with exponential decay.
 fn kick() -> impl Source<Item = f32> + Send {
     FnSource::new(0.38, |t| {
         let pitch = 110.0 * (-t * 22.0).exp() + 42.0;
@@ -189,7 +349,6 @@ fn kick() -> impl Source<Item = f32> + Send {
     })
 }
 
-/// Snare: short noise burst + tonal body.
 fn snare() -> impl Source<Item = f32> + Send {
     let mut rng = 0xdeadbeef_u64;
     FnSource::new(0.22, move |t| {
@@ -204,7 +363,6 @@ fn snare() -> impl Source<Item = f32> + Send {
     })
 }
 
-/// Closed hi-hat: high-frequency noise, very short.
 fn hihat_closed() -> impl Source<Item = f32> + Send {
     let mut rng = 0xc0ffee_u64;
     FnSource::new(0.055, move |t| {
@@ -215,7 +373,6 @@ fn hihat_closed() -> impl Source<Item = f32> + Send {
     })
 }
 
-/// Open hi-hat: same but longer decay.
 fn hihat_open() -> impl Source<Item = f32> + Send {
     let mut rng = 0xface_u64;
     FnSource::new(0.35, move |t| {
@@ -226,52 +383,6 @@ fn hihat_open() -> impl Source<Item = f32> + Send {
     })
 }
 
-/// Sub bass: low sine with slow decay.
-fn bass() -> impl Source<Item = f32> + Send {
-    FnSource::new(0.55, |t| {
-        let pitch = 65.0 * (-t * 6.0).exp() + 38.0;
-        let env = (-t * 4.5).exp();
-        ((2.0 * PI * pitch * t).sin() * env * 0.85) as f32
-    })
-}
-
-/// Synth lead: detuned sawtooth (sum of harmonics), plucky.
-fn synth_lead() -> impl Source<Item = f32> + Send {
-    FnSource::new(0.28, |t| {
-        let f0 = 440.0_f64;
-        let detune = 1.007_f64;
-        let env = (-t * 12.0).exp() * 0.55;
-        let mut s = 0.0_f64;
-        for k in 1..=8_u32 {
-            let kf = k as f64;
-            s += ((2.0 * PI * f0 * kf * t).sin() + (2.0 * PI * f0 * detune * kf * t).sin() * 0.6)
-                / kf;
-        }
-        (s * env * 0.3) as f32
-    })
-}
-
-/// Pad: soft chord with attack, long release.
-fn pad() -> impl Source<Item = f32> + Send {
-    // C4 minor triad: C4, Eb4, G4
-    let freqs = [261.63_f64, 311.13, 392.0];
-    FnSource::new(1.2, move |t| {
-        let attack = (t * 4.0).min(1.0);
-        let release = (-t * 1.5).exp();
-        let env = attack * release * 0.25;
-        let s: f64 = freqs
-            .iter()
-            .enumerate()
-            .map(|(i, &f)| {
-                let amp = 1.0 - i as f64 * 0.2;
-                (2.0 * PI * f * t).sin() * amp
-            })
-            .sum();
-        (s * env) as f32
-    })
-}
-
-/// Clap: layered noise bursts.
 fn clap() -> impl Source<Item = f32> + Send {
     let mut rng = 0xabad1dea_u64;
     FnSource::new(0.18, move |t| {
@@ -279,7 +390,6 @@ fn clap() -> impl Source<Item = f32> + Send {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         let noise = (rng >> 33) as f64 / (1u64 << 31) as f64 - 1.0;
-        // Three overlapping bursts simulating hand clap.
         let b0 = (-((t - 0.000) * 60.0).powi(2)).exp();
         let b1 = (-((t - 0.012) * 55.0).powi(2)).exp();
         let b2 = (-((t - 0.026) * 40.0).powi(2)).exp();

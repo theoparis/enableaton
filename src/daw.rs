@@ -3,7 +3,9 @@ use gpui::{AppContext, Context, Entity, ScrollHandle, Task, point, px};
 use crate::ui::core::slider::Slider;
 use std::time::{Duration, Instant};
 
-use crate::audio::{AudioEngine, SampleType};
+use std::sync::Arc;
+
+use crate::audio::{AudioEngine, SampleType, WaveShape, WavetableSynth};
 use crate::models::{
     DragKind, DragState, DrumPad, Instrument, Note, Pattern, PianoRollResize, Track,
 };
@@ -73,6 +75,25 @@ impl Daw {
             true, false, false, false, false, false, false, false, true, false, false, false,
             false, false, false, false,
         ];
+
+        let bass_synth = Arc::new(
+            WavetableSynth::new(WaveShape::Saw, "BS", 0x1a2a6a)
+                .with_adsr(0.005, 0.1, 0.6, 0.15)
+                .with_note_len(0.3)
+                .with_amplitude(0.6),
+        );
+        let lead_synth = Arc::new(
+            WavetableSynth::new(WaveShape::Saw, "SY", 0x143d35)
+                .with_adsr(0.005, 0.08, 0.5, 0.1)
+                .with_note_len(0.25)
+                .with_amplitude(0.5),
+        );
+        let pad_synth = Arc::new(
+            WavetableSynth::new(WaveShape::Sine, "PD", 0x3a2050)
+                .with_adsr(0.3, 0.2, 0.8, 0.5)
+                .with_note_len(1.0)
+                .with_amplitude(0.4),
+        );
 
         fn steps_to_notes(
             patterns: &[(usize, usize)],
@@ -187,7 +208,6 @@ impl Daw {
                     name: "Bass".into(),
                     color: TRACK_COLORS[5],
                     muted: false,
-                    // Arrangement blocks kept for song-editor display; steps unused (notes drive playback).
                     patterns: [(2, 6), (10, 4), (18, 10)]
                         .iter()
                         .map(|&(s, l)| Pattern {
@@ -196,9 +216,8 @@ impl Daw {
                             steps: [false; STEPS],
                         })
                         .collect(),
-                    // C3 = 48: speed × 2 over C2 base, sounds an octave up — tight bass register.
-                    notes: steps_to_notes(&[(2, 6), (10, 4), (18, 10)], &bass_steps, 48),
-                    instrument: Instrument::Sampler(SampleType::Bass),
+                    notes: steps_to_notes(&[(2, 6), (10, 4), (18, 10)], &bass_steps, 36),
+                    instrument: Instrument::Plugin(bass_synth),
                 },
                 Track {
                     name: "Synth Lead".into(),
@@ -212,9 +231,8 @@ impl Daw {
                             steps: [false; STEPS],
                         })
                         .collect(),
-                    // F4 = 65: one semitone above base (E4=64), nearly unchanged timbre.
                     notes: steps_to_notes(&[(4, 8), (16, 12)], &synth_steps, 65),
-                    instrument: Instrument::Sampler(SampleType::SynthLead),
+                    instrument: Instrument::Plugin(lead_synth),
                 },
                 Track {
                     name: "Pad".into(),
@@ -228,9 +246,8 @@ impl Daw {
                             steps: [false; STEPS],
                         })
                         .collect(),
-                    // C4 = 60: a fourth above G3 base, brightens the pad slightly.
                     notes: steps_to_notes(&[(0, 28)], &pad_steps, 60),
-                    instrument: Instrument::Sampler(SampleType::Pad),
+                    instrument: Instrument::Plugin(pad_synth),
                 },
             ],
         }
@@ -269,7 +286,7 @@ impl Daw {
                                     if t.muted {
                                         continue;
                                     }
-                                    if matches!(t.instrument, Instrument::Sampler(_)) {
+                                    if t.instrument.uses_piano_roll() {
                                         for note in &t.notes {
                                             if note.start >= prev_pos && note.start < this.play_pos
                                             {
@@ -366,11 +383,16 @@ impl Daw {
 
     pub fn add_track(&mut self) {
         let idx = self.tracks.len() % TRACK_COLORS.len();
+        let color = TRACK_COLORS[idx];
         self.tracks.push(Track {
             name: format!("Track {}", self.tracks.len() + 1),
-            color: TRACK_COLORS[idx],
+            color,
             muted: false,
-            instrument: Instrument::Sampler(SampleType::HiHat),
+            instrument: Instrument::Plugin(Arc::new(WavetableSynth::new(
+                WaveShape::Saw,
+                "WT",
+                color,
+            ))),
             patterns: vec![],
             notes: vec![],
         });

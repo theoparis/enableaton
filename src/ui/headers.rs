@@ -42,7 +42,7 @@ impl Daw {
             let color = t.color;
             let muted = t.muted;
             let name = SharedString::from(t.name.clone());
-            let badge_label = t.instrument.short_label();
+            let badge_label: String = t.instrument.short_label();
             let badge_color = t.instrument.badge_color();
             let is_selected = selected == Some(idx);
 

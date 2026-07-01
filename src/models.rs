@@ -1,4 +1,6 @@
-use crate::audio::SampleType;
+use std::sync::Arc;
+
+use crate::audio::{InstrumentPlugin, SampleType};
 use crate::theme::STEPS;
 
 #[derive(Clone, Debug)]
@@ -26,19 +28,40 @@ pub struct DrumPad {
 
 /// What plays when a track fires.
 ///
-/// `Sampler` fires once per active pattern step. `DrumRack` owns its own per-pad
-/// step grid and fires each pad independently on every step inside an active pattern.
-#[derive(Clone, Debug)]
+/// `Sampler` fires a percussion sample. `DrumRack` owns its own per-pad step
+/// grid. `Plugin` delegates synthesis to an `InstrumentPlugin` implementation.
 pub enum Instrument {
     Sampler(SampleType),
     DrumRack(Vec<DrumPad>),
+    Plugin(Arc<dyn InstrumentPlugin>),
+}
+
+impl Clone for Instrument {
+    fn clone(&self) -> Self {
+        match self {
+            Instrument::Sampler(s) => Instrument::Sampler(*s),
+            Instrument::DrumRack(pads) => Instrument::DrumRack(pads.clone()),
+            Instrument::Plugin(p) => Instrument::Plugin(Arc::clone(p)),
+        }
+    }
+}
+
+impl std::fmt::Debug for Instrument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Instrument::Sampler(s) => f.debug_tuple("Sampler").field(s).finish(),
+            Instrument::DrumRack(pads) => f.debug_tuple("DrumRack").field(&pads.len()).finish(),
+            Instrument::Plugin(p) => write!(f, "Plugin({})", p.short_label()),
+        }
+    }
 }
 
 impl Instrument {
-    pub fn short_label(&self) -> &'static str {
+    pub fn short_label(&self) -> String {
         match self {
-            Instrument::Sampler(s) => s.short_label(),
-            Instrument::DrumRack(_) => "DR",
+            Instrument::Sampler(s) => s.short_label().to_string(),
+            Instrument::DrumRack(_) => "DR".to_string(),
+            Instrument::Plugin(p) => p.short_label().to_string(),
         }
     }
 
@@ -46,10 +69,16 @@ impl Instrument {
         match self {
             Instrument::Sampler(s) => s.badge_color(),
             Instrument::DrumRack(_) => 0x2a1535,
+            Instrument::Plugin(p) => p.badge_color(),
         }
     }
 
-    /// Preview trigger (no pitch). Used for drum rack pads and sampler track clicks.
+    /// Returns true for instrument types that use piano-roll note data for playback.
+    pub fn uses_piano_roll(&self) -> bool {
+        matches!(self, Instrument::Sampler(_) | Instrument::Plugin(_))
+    }
+
+    /// Preview trigger (no pitch). Used for track header clicks.
     pub fn trigger(&self, audio: &crate::audio::AudioEngine) {
         match self {
             Instrument::Sampler(s) => audio.trigger(*s),
@@ -58,20 +87,20 @@ impl Instrument {
                     audio.trigger(pad.sample);
                 }
             }
+            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), None),
         }
     }
 
     /// Trigger with a specific MIDI pitch (piano roll note playback).
     pub fn trigger_note(&self, pitch: u8, audio: &crate::audio::AudioEngine) {
         match self {
-            Instrument::Sampler(s) => audio.trigger_pitched(*s, Some(pitch)),
-            Instrument::DrumRack(_) => {} // drum rack uses trigger_step
+            Instrument::Sampler(s) => audio.trigger(*s),
+            Instrument::DrumRack(_) => {}
+            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), Some(pitch)),
         }
     }
 
     /// Called every step inside an active arrangement pattern.
-    /// For Sampler, fires only when `pat_steps[step]` is set.
-    /// For DrumRack, ignores `pat_steps` and checks each pad's own grid.
     pub fn trigger_step(
         &self,
         step: usize,
@@ -91,6 +120,11 @@ impl Instrument {
                     }
                 }
             }
+            Instrument::Plugin(p) => {
+                if pat_steps[step] {
+                    audio.trigger_plugin(p.as_ref(), Some(60));
+                }
+            }
         }
     }
 }
@@ -102,14 +136,13 @@ pub struct Track {
     pub muted: bool,
     pub patterns: Vec<Pattern>,
     pub instrument: Instrument,
-    /// Piano-roll note data (used when instrument is Sampler; empty for DrumRack).
+    /// Piano-roll note data (used by Sampler and Plugin tracks; empty for DrumRack).
     pub notes: Vec<Note>,
 }
 
 #[derive(Clone, Debug)]
 pub struct PianoRollResize {
     pub track_idx: usize,
-    /// Identifies the note by (pitch, start) so the index stays valid after re-renders.
     pub note_pitch: u8,
     pub note_start: f32,
     pub orig_duration: f32,
