@@ -24,16 +24,18 @@
               rust-analyzer
               rustfmt
               cargo
-              clippy 
+              clippy
             ];
 
             buildInputs = [
               vulkan-loader
-              libGL 
+              libGL
             ]
             ++ lib.optionals stdenv.hostPlatform.isLinux [
               alsa-lib
               wayland
+              libxcb
+              fontconfig
               libxkbcommon
             ];
 
