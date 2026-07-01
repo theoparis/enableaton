@@ -88,20 +88,41 @@ impl AudioEngine {
     }
 
     pub fn set_master_vol(&self, vol: f32) {
-        self.master_vol.store(f32::to_bits(vol.clamp(0.0, 1.0)), Ordering::Relaxed);
+        self.master_vol
+            .store(f32::to_bits(vol.clamp(0.0, 1.0)), Ordering::Relaxed);
     }
 
     pub fn trigger(&self, sample: SampleType) {
+        self.trigger_pitched(sample, None);
+    }
+
+    /// Trigger a sample optionally pitch-shifted to `midi_pitch`.
+    /// The base pitch for each synthesized instrument is hard-coded to match its
+    /// natural frequency; passing `None` plays it at the original pitch.
+    pub fn trigger_pitched(&self, sample: SampleType, midi_pitch: Option<u8>) {
         let vol = f32::from_bits(self.master_vol.load(Ordering::Relaxed));
+
+        let speed = midi_pitch
+            .map(|p| {
+                let base: f32 = match sample {
+                    SampleType::Bass => 36.0,
+                    SampleType::SynthLead => 64.0,
+                    SampleType::Pad => 55.0,
+                    _ => return 1.0_f32,
+                };
+                2.0_f32.powf((p as f32 - base) / 12.0)
+            })
+            .unwrap_or(1.0);
+
         let src: Box<dyn Source<Item = f32> + Send> = match sample {
-            SampleType::Kick => Box::new(kick().amplify(vol)),
-            SampleType::Snare => Box::new(snare().amplify(vol)),
-            SampleType::HiHat => Box::new(hihat_closed().amplify(vol)),
-            SampleType::OpenHat => Box::new(hihat_open().amplify(vol)),
-            SampleType::Bass => Box::new(bass().amplify(vol)),
-            SampleType::SynthLead => Box::new(synth_lead().amplify(vol)),
-            SampleType::Pad => Box::new(pad().amplify(vol)),
-            SampleType::Clap => Box::new(clap().amplify(vol)),
+            SampleType::Kick => Box::new(kick().speed(speed).amplify(vol)),
+            SampleType::Snare => Box::new(snare().speed(speed).amplify(vol)),
+            SampleType::HiHat => Box::new(hihat_closed().speed(speed).amplify(vol)),
+            SampleType::OpenHat => Box::new(hihat_open().speed(speed).amplify(vol)),
+            SampleType::Bass => Box::new(bass().speed(speed).amplify(vol)),
+            SampleType::SynthLead => Box::new(synth_lead().speed(speed).amplify(vol)),
+            SampleType::Pad => Box::new(pad().speed(speed).amplify(vol)),
+            SampleType::Clap => Box::new(clap().speed(speed).amplify(vol)),
         };
         self.mixer.add(src);
     }

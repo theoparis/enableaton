@@ -5,17 +5,14 @@ use crate::daw::Daw;
 use crate::models::Instrument;
 use crate::theme::*;
 
-// Per-row data collected before building UI to avoid borrow conflicts.
-struct StepRowData {
+struct PadRowData {
     t_idx: usize,
-    /// `Some(i)` for a drum-rack pad row, `None` for a sampler track row.
-    pad_idx: Option<usize>,
+    pad_idx: usize,
     color: u32,
     muted: bool,
     name: String,
     badge_label: &'static str,
     badge_color: u32,
-    is_selected: bool,
     steps: [bool; STEPS],
     has_clip: bool,
     current_step: usize,
@@ -23,86 +20,48 @@ struct StepRowData {
 
 impl Daw {
     pub(super) fn render_beat_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        if !self.show_beat_editor {
-            return div().flex_none().h(px(0.));
-        }
+        let Some(t_idx) = self.selected_track else {
+            return div().flex_none().h(px(BEAT_PANEL_H));
+        };
 
         let playing = self.playing;
         let play_pos = self.play_pos;
         let beats_per_bar = self.beats_per_bar;
         let step_w = STEP_BTN + STEP_GAP;
         let bar = (play_pos / beats_per_bar as f32).floor() as usize + 1;
-        let selected = self.selected_track;
 
-        // ── Collect rows ────────────────────────────────────────────────────────
-        let mut rows: Vec<StepRowData> = Vec::new();
-        for t_idx in 0..self.tracks.len() {
-            let track = &self.tracks[t_idx];
-            let active_pat_idx = Daw::active_pattern_idx(track, play_pos);
-            let has_clip = active_pat_idx.is_some();
-            let is_track_selected = selected == Some(t_idx);
+        let track = &self.tracks[t_idx];
+        let track_name = track.name.clone();
+        let active_pat_idx = Daw::active_pattern_idx(track, play_pos);
+        let has_clip = active_pat_idx.is_some();
+        let current_step = if playing && has_clip {
+            let pat = &track.patterns[active_pat_idx.unwrap()];
+            let elapsed = play_pos - pat.start as f32;
+            (elapsed * 4.0).floor() as usize % STEPS
+        } else {
+            usize::MAX
+        };
 
-            match &track.instrument {
-                Instrument::Sampler(_) => {
-                    let steps = active_pat_idx
-                        .map(|i| track.patterns[i].steps)
-                        .unwrap_or([false; STEPS]);
-                    let current_step = if playing && has_clip {
-                        let pat = &track.patterns[active_pat_idx.unwrap()];
-                        let elapsed = play_pos - pat.start as f32;
-                        (elapsed * 4.0).floor() as usize % STEPS
-                    } else {
-                        usize::MAX
-                    };
-                    rows.push(StepRowData {
-                        t_idx,
-                        pad_idx: None,
-                        color: track.color,
-                        muted: track.muted,
-                        name: track.name.clone(),
-                        badge_label: track.instrument.short_label(),
-                        badge_color: track.instrument.badge_color(),
-                        is_selected: is_track_selected,
-                        steps,
-                        has_clip,
-                        current_step,
-                    });
-                }
-                Instrument::DrumRack(pads) => {
-                    let current_step = if playing && has_clip {
-                        let pat = &track.patterns[active_pat_idx.unwrap()];
-                        let elapsed = play_pos - pat.start as f32;
-                        (elapsed * 4.0).floor() as usize % STEPS
-                    } else {
-                        usize::MAX
-                    };
-                    for (pad_idx, pad) in pads.iter().enumerate() {
-                        rows.push(StepRowData {
-                            t_idx,
-                            pad_idx: Some(pad_idx),
-                            color: pad.color,
-                            muted: pad.muted || track.muted,
-                            name: pad.name.clone(),
-                            badge_label: pad.sample.short_label(),
-                            badge_color: pad.sample.badge_color(),
-                            is_selected: is_track_selected,
-                            steps: pad.steps,
-                            has_clip,
-                            current_step,
-                        });
-                    }
-                }
+        // Collect pad rows from the drum rack.
+        let mut rows: Vec<PadRowData> = Vec::new();
+        if let Instrument::DrumRack(pads) = &track.instrument {
+            for (pad_idx, pad) in pads.iter().enumerate() {
+                rows.push(PadRowData {
+                    t_idx,
+                    pad_idx,
+                    color: pad.color,
+                    muted: pad.muted || track.muted,
+                    name: pad.name.clone(),
+                    badge_label: pad.sample.short_label(),
+                    badge_color: pad.sample.badge_color(),
+                    steps: pad.steps,
+                    has_clip,
+                    current_step,
+                });
             }
         }
 
-        // ── Header label ────────────────────────────────────────────────────────
-        let editing_label = selected
-            .map(|i| {
-                let t = &self.tracks[i];
-                SharedString::from(format!("EDITING: {}", t.name.to_uppercase()))
-            })
-            .unwrap_or_else(|| SharedString::from("BEAT SEQUENCER"));
-
+        // ── Header ──────────────────────────────────────────────────────────────
         let mut panel = div()
             .flex_none()
             .h(px(BEAT_PANEL_H))
@@ -136,7 +95,10 @@ impl Daw {
                                 .text_xs()
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(rgb(ACCENT))
-                                .child(editing_label),
+                                .child(SharedString::from(format!(
+                                    "DRUM RACK: {}",
+                                    track_name.to_uppercase()
+                                ))),
                         )
                         .child(
                             div()
@@ -167,8 +129,11 @@ impl Daw {
                         .flex_row()
                         .items_center()
                         .children((0..STEPS).map(|s| {
-                            let extra =
-                                if s > 0 && s % 4 == 0 { STEP_GROUP_GAP } else { 0.0 };
+                            let extra = if s > 0 && s % 4 == 0 {
+                                STEP_GROUP_GAP
+                            } else {
+                                0.0
+                            };
                             let is_beat = s % 4 == 0;
                             div()
                                 .w(px(step_w + extra))
@@ -192,7 +157,7 @@ impl Daw {
                 ),
         );
 
-        // ── Step rows ───────────────────────────────────────────────────────────
+        // ── Pad rows ─────────────────────────────────────────────────────────────
         let mut beat_rows = div()
             .id("beat-scroll")
             .flex_1()
@@ -201,7 +166,7 @@ impl Daw {
             .flex_col();
 
         for row in rows {
-            let StepRowData {
+            let PadRowData {
                 t_idx,
                 pad_idx,
                 color,
@@ -209,13 +174,10 @@ impl Daw {
                 name,
                 badge_label,
                 badge_color,
-                is_selected,
                 steps,
                 has_clip,
                 current_step,
             } = row;
-
-            let row_bg = if is_selected { 0x1a2a45u32 } else { BG };
 
             let header_cell = div()
                 .flex_none()
@@ -228,37 +190,16 @@ impl Daw {
                 .child(sample_badge(badge_label, badge_color))
                 .child(
                     div()
-                        .id(SharedString::from(format!(
-                            "preview-{t_idx}-{}",
-                            pad_idx.unwrap_or(usize::MAX)
-                        )))
+                        .id(SharedString::from(format!("pad-preview-{t_idx}-{pad_idx}")))
                         .flex_1()
                         .text_xs()
-                        .font_weight(if is_selected {
-                            FontWeight::BOLD
-                        } else {
-                            FontWeight::SEMIBOLD
-                        })
-                        .text_color(rgb(if muted {
-                            TEXT_DIM
-                        } else if is_selected {
-                            0xddf0ff
-                        } else {
-                            TEXT
-                        }))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(if muted { TEXT_DIM } else { TEXT }))
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            this.selected_track = Some(t_idx);
-                            if let Some(audio) = &this.audio {
-                                match pad_idx {
-                                    None => this.tracks[t_idx].instrument.trigger(audio),
-                                    Some(pi) => {
-                                        if let Instrument::DrumRack(pads) =
-                                            &this.tracks[t_idx].instrument
-                                        {
-                                            audio.trigger(pads[pi].sample);
-                                        }
-                                    }
+                            if let Instrument::DrumRack(pads) = &this.tracks[t_idx].instrument {
+                                if let Some(audio) = &this.audio {
+                                    audio.trigger(pads[pad_idx].sample);
                                 }
                             }
                             cx.notify();
@@ -267,10 +208,7 @@ impl Daw {
                 )
                 .child(
                     div()
-                        .id(SharedString::from(format!(
-                            "mute-{t_idx}-{}",
-                            pad_idx.unwrap_or(usize::MAX)
-                        )))
+                        .id(SharedString::from(format!("pad-mute-{t_idx}-{pad_idx}")))
                         .flex_none()
                         .w(px(18.))
                         .h(px(18.))
@@ -285,15 +223,8 @@ impl Daw {
                         .cursor_pointer()
                         .hover(|s| s.text_color(rgb(ACCENT)))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            match pad_idx {
-                                None => this.tracks[t_idx].muted ^= true,
-                                Some(pi) => {
-                                    if let Instrument::DrumRack(pads) =
-                                        &mut this.tracks[t_idx].instrument
-                                    {
-                                        pads[pi].muted ^= true;
-                                    }
-                                }
+                            if let Instrument::DrumRack(pads) = &mut this.tracks[t_idx].instrument {
+                                pads[pad_idx].muted ^= true;
                             }
                             cx.notify();
                         }))
@@ -304,8 +235,11 @@ impl Daw {
             for s in 0..STEPS {
                 let active = steps[s];
                 let is_playing_step = s == current_step;
-                let extra_left =
-                    if s > 0 && s % 4 == 0 { STEP_GROUP_GAP } else { 0.0 };
+                let extra_left = if s > 0 && s % 4 == 0 {
+                    STEP_GROUP_GAP
+                } else {
+                    0.0
+                };
 
                 let btn_bg = if !has_clip {
                     0x0d1520u32
@@ -324,57 +258,28 @@ impl Daw {
                 } else {
                     BORDER
                 };
-                let btn_h = if is_selected { 22. } else { 18. };
 
                 step_cells = step_cells.child(
                     div()
-                        .id(SharedString::from(format!(
-                            "step-{t_idx}-{}-{s}",
-                            pad_idx.unwrap_or(usize::MAX)
-                        )))
+                        .id(SharedString::from(format!("step-{t_idx}-{pad_idx}-{s}")))
                         .ml(px(extra_left + STEP_GAP))
                         .w(px(STEP_BTN))
-                        .h(px(btn_h))
+                        .h(px(20.))
                         .bg(rgb(btn_bg))
                         .rounded_sm()
                         .border_1()
                         .border_color(rgb(btn_border))
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                            this.selected_track = Some(t_idx);
-                            let pp = this.play_pos;
-                            match pad_idx {
-                                None => {
-                                    if let Some(pi) =
-                                        Daw::active_pattern_idx(&this.tracks[t_idx], pp)
-                                    {
-                                        this.tracks[t_idx].patterns[pi].steps[s] ^= true;
-                                        if this.tracks[t_idx].patterns[pi].steps[s] {
-                                            if let Some(audio) = &this.audio {
-                                                this.tracks[t_idx].instrument.trigger(audio);
-                                            }
-                                        }
-                                        cx.notify();
-                                    }
-                                }
-                                Some(pi) => {
-                                    if Daw::active_pattern_idx(&this.tracks[t_idx], pp)
-                                        .is_some()
-                                    {
-                                        if let Instrument::DrumRack(pads) =
-                                            &mut this.tracks[t_idx].instrument
-                                        {
-                                            pads[pi].steps[s] ^= true;
-                                            if pads[pi].steps[s] {
-                                                if let Some(audio) = &this.audio {
-                                                    audio.trigger(pads[pi].sample);
-                                                }
-                                            }
-                                        }
-                                        cx.notify();
+                            if let Instrument::DrumRack(pads) = &mut this.tracks[t_idx].instrument {
+                                pads[pad_idx].steps[s] ^= true;
+                                if pads[pad_idx].steps[s] {
+                                    if let Some(audio) = &this.audio {
+                                        audio.trigger(pads[pad_idx].sample);
                                     }
                                 }
                             }
+                            cx.notify();
                         })),
                 );
             }
@@ -382,13 +287,13 @@ impl Daw {
             beat_rows = beat_rows.child(
                 div()
                     .flex_none()
-                    .h(px(if is_selected { 28. } else { 24. }))
+                    .h(px(36.))
                     .flex()
                     .flex_row()
                     .items_center()
                     .border_b_1()
-                    .border_color(rgb(if is_selected { ACCENT_DIM } else { BORDER }))
-                    .bg(rgb(row_bg))
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(BG))
                     .child(header_cell)
                     .child(step_cells),
             );

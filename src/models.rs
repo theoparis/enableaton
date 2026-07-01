@@ -2,6 +2,13 @@ use crate::audio::SampleType;
 use crate::theme::STEPS;
 
 #[derive(Clone, Debug)]
+pub struct Note {
+    pub pitch: u8,     // MIDI note number, C4 = 60
+    pub start: f32,    // absolute timeline position in beats
+    pub duration: f32, // in beats
+}
+
+#[derive(Clone, Debug)]
 pub struct Pattern {
     pub start: usize,
     pub len: usize,
@@ -42,7 +49,7 @@ impl Instrument {
         }
     }
 
-    /// Preview trigger (e.g. clicking the track name): fires the first non-muted pad.
+    /// Preview trigger (no pitch). Used for drum rack pads and sampler track clicks.
     pub fn trigger(&self, audio: &crate::audio::AudioEngine) {
         match self {
             Instrument::Sampler(s) => audio.trigger(*s),
@@ -51,6 +58,14 @@ impl Instrument {
                     audio.trigger(pad.sample);
                 }
             }
+        }
+    }
+
+    /// Trigger with a specific MIDI pitch (piano roll note playback).
+    pub fn trigger_note(&self, pitch: u8, audio: &crate::audio::AudioEngine) {
+        match self {
+            Instrument::Sampler(s) => audio.trigger_pitched(*s, Some(pitch)),
+            Instrument::DrumRack(_) => {} // drum rack uses trigger_step
         }
     }
 
@@ -87,6 +102,18 @@ pub struct Track {
     pub muted: bool,
     pub patterns: Vec<Pattern>,
     pub instrument: Instrument,
+    /// Piano-roll note data (used when instrument is Sampler; empty for DrumRack).
+    pub notes: Vec<Note>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PianoRollResize {
+    pub track_idx: usize,
+    /// Identifies the note by (pitch, start) so the index stays valid after re-renders.
+    pub note_pitch: u8,
+    pub note_start: f32,
+    pub orig_duration: f32,
+    pub drag_start_x: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

@@ -2,14 +2,16 @@ mod beat;
 pub mod core;
 mod headers;
 mod pattern;
+mod piano_roll;
 mod transport;
 
 use gpui::{
-    App, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
-    Render, SharedString, Window, div, prelude::*, px, rgb,
+    AnyElement, App, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseMoveEvent,
+    MouseUpEvent, Render, SharedString, Window, div, prelude::*, px, rgb,
 };
 
 use crate::daw::Daw;
+use crate::models::Instrument;
 use crate::theme::*;
 
 impl Render for Daw {
@@ -37,7 +39,15 @@ impl Render for Daw {
         let transport = self.render_transport(cx);
         let headers = self.render_headers(cx);
         let pattern_scroll = self.render_pattern_area(cx);
-        let beat_panel = self.render_beat_panel(cx);
+        let bottom_panel: AnyElement = if !self.show_beat_editor {
+            div().flex_none().into_any_element()
+        } else {
+            match self.selected_track.map(|i| &self.tracks[i].instrument) {
+                Some(Instrument::DrumRack(_)) => self.render_beat_panel(cx).into_any_element(),
+                Some(Instrument::Sampler(_)) => self.render_piano_roll(cx).into_any_element(),
+                None => div().flex_none().into_any_element(),
+            }
+        };
 
         div()
             .id("root")
@@ -72,7 +82,7 @@ impl Render for Daw {
                     .child(headers)
                     .child(pattern_scroll),
             )
-            .child(beat_panel)
+            .child(bottom_panel)
             .child(status)
     }
 }
