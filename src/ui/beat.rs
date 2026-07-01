@@ -129,8 +129,8 @@ impl Daw {
             let color = track.color;
             let muted = track.muted;
             let name = track.name.clone();
-            let badge_label = track.sample.short_label();
-            let badge_color = track.sample.badge_color();
+            let badge_label = track.instrument.short_label();
+            let badge_color = track.instrument.badge_color();
             let is_selected = selected == Some(t_idx);
 
             let active_pat_idx = Daw::active_pattern_idx(track, play_pos);
@@ -238,7 +238,7 @@ impl Daw {
                                 this.tracks[t_idx].patterns[pat_idx].steps[s] ^= true;
                                 if this.tracks[t_idx].patterns[pat_idx].steps[s] {
                                     if let Some(audio) = &this.audio {
-                                        audio.trigger(this.tracks[t_idx].sample);
+                                        this.tracks[t_idx].instrument.trigger(audio);
                                     }
                                 }
                                 cx.notify();

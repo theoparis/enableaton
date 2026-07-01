@@ -1,4 +1,6 @@
 use std::f64::consts::PI;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use rodio::source::Source;
@@ -51,6 +53,7 @@ impl SampleType {
 
 pub struct AudioEngine {
     mixer: Mixer,
+    master_vol: Arc<AtomicU32>,
 }
 
 impl AudioEngine {
@@ -78,19 +81,27 @@ impl AudioEngine {
 
         rx.recv_timeout(Duration::from_secs(2))
             .ok()
-            .map(|mixer| Self { mixer })
+            .map(|mixer| Self {
+                mixer,
+                master_vol: Arc::new(AtomicU32::new(f32::to_bits(1.0))),
+            })
+    }
+
+    pub fn set_master_vol(&self, vol: f32) {
+        self.master_vol.store(f32::to_bits(vol.clamp(0.0, 1.0)), Ordering::Relaxed);
     }
 
     pub fn trigger(&self, sample: SampleType) {
+        let vol = f32::from_bits(self.master_vol.load(Ordering::Relaxed));
         let src: Box<dyn Source<Item = f32> + Send> = match sample {
-            SampleType::Kick => Box::new(kick()),
-            SampleType::Snare => Box::new(snare()),
-            SampleType::HiHat => Box::new(hihat_closed()),
-            SampleType::OpenHat => Box::new(hihat_open()),
-            SampleType::Bass => Box::new(bass()),
-            SampleType::SynthLead => Box::new(synth_lead()),
-            SampleType::Pad => Box::new(pad()),
-            SampleType::Clap => Box::new(clap()),
+            SampleType::Kick => Box::new(kick().amplify(vol)),
+            SampleType::Snare => Box::new(snare().amplify(vol)),
+            SampleType::HiHat => Box::new(hihat_closed().amplify(vol)),
+            SampleType::OpenHat => Box::new(hihat_open().amplify(vol)),
+            SampleType::Bass => Box::new(bass().amplify(vol)),
+            SampleType::SynthLead => Box::new(synth_lead().amplify(vol)),
+            SampleType::Pad => Box::new(pad().amplify(vol)),
+            SampleType::Clap => Box::new(clap().amplify(vol)),
         };
         self.mixer.add(src);
     }

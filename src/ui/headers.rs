@@ -42,8 +42,8 @@ impl Daw {
             let color = t.color;
             let muted = t.muted;
             let name = SharedString::from(t.name.clone());
-            let badge_label = t.sample.short_label();
-            let badge_color = t.sample.badge_color();
+            let badge_label = t.instrument.short_label();
+            let badge_color = t.instrument.badge_color();
             let is_selected = selected == Some(idx);
 
             headers = headers.child(
@@ -88,7 +88,7 @@ impl Daw {
                             .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                                 this.selected_track = Some(idx);
                                 if let Some(audio) = &this.audio {
-                                    audio.trigger(this.tracks[idx].sample);
+                                    this.tracks[idx].instrument.trigger(audio);
                                 }
                                 cx.notify();
                             }))

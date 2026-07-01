@@ -4,7 +4,7 @@ use crate::ui::core::slider::Slider;
 use std::time::{Duration, Instant};
 
 use crate::audio::{AudioEngine, SampleType};
-use crate::models::{DragKind, DragState, Pattern, Track};
+use crate::models::{DragKind, DragState, Instrument, Pattern, Track};
 use crate::theme::*;
 
 pub struct Daw {
@@ -109,6 +109,9 @@ impl Daw {
                     Slider::new(0.72).on_change(move |val, app| {
                         app.update_entity(&daw_entity, |daw, cx| {
                             daw.master_vol = val;
+                            if let Some(audio) = &daw.audio {
+                                audio.set_master_vol(val);
+                            }
                             cx.notify();
                         });
                     })
@@ -119,56 +122,56 @@ impl Daw {
                     name: "Kick".into(),
                     color: TRACK_COLORS[0],
                     muted: false,
-                    sample: SampleType::Kick,
+                    instrument: Instrument::Sampler(SampleType::Kick),
                     patterns: pats(&[(0, 4), (4, 4), (12, 8), (24, 8)], kick_steps),
                 },
                 Track {
                     name: "Snare".into(),
                     color: TRACK_COLORS[1],
                     muted: false,
-                    sample: SampleType::Snare,
+                    instrument: Instrument::Sampler(SampleType::Snare),
                     patterns: pats(&[(0, 8), (16, 8)], snare_steps),
                 },
                 Track {
                     name: "Hi-Hat".into(),
                     color: TRACK_COLORS[2],
                     muted: false,
-                    sample: SampleType::HiHat,
+                    instrument: Instrument::Sampler(SampleType::HiHat),
                     patterns: pats(&[(0, 16), (20, 4)], hihat_steps),
                 },
                 Track {
                     name: "Open Hat".into(),
                     color: TRACK_COLORS[3],
                     muted: false,
-                    sample: SampleType::OpenHat,
+                    instrument: Instrument::Sampler(SampleType::OpenHat),
                     patterns: pats(&[(4, 4), (20, 4)], openhat_steps),
                 },
                 Track {
                     name: "Clap".into(),
                     color: TRACK_COLORS[4],
                     muted: false,
-                    sample: SampleType::Clap,
+                    instrument: Instrument::Sampler(SampleType::Clap),
                     patterns: pats(&[(2, 6), (18, 10)], clap_steps),
                 },
                 Track {
                     name: "Bass".into(),
                     color: TRACK_COLORS[5],
                     muted: false,
-                    sample: SampleType::Bass,
+                    instrument: Instrument::Sampler(SampleType::Bass),
                     patterns: pats(&[(2, 6), (10, 4), (18, 10)], bass_steps),
                 },
                 Track {
                     name: "Synth Lead".into(),
                     color: TRACK_COLORS[6],
                     muted: false,
-                    sample: SampleType::SynthLead,
+                    instrument: Instrument::Sampler(SampleType::SynthLead),
                     patterns: pats(&[(4, 8), (16, 12)], synth_steps),
                 },
                 Track {
                     name: "Pad".into(),
                     color: TRACK_COLORS[0],
                     muted: false,
-                    sample: SampleType::Pad,
+                    instrument: Instrument::Sampler(SampleType::Pad),
                     patterns: pats(&[(0, 28)], pad_steps),
                 },
             ],
@@ -219,7 +222,7 @@ impl Daw {
                                         (elapsed * steps_per_beat as f32).floor() as usize % STEPS;
                                     if pat.steps[step] {
                                         if let Some(audio) = &this.audio {
-                                            audio.trigger(t.sample);
+                                            t.instrument.trigger(audio);
                                         }
                                     }
                                 }
@@ -293,7 +296,7 @@ impl Daw {
             name: format!("Track {}", self.tracks.len() + 1),
             color: TRACK_COLORS[idx],
             muted: false,
-            sample: SampleType::HiHat,
+            instrument: Instrument::Sampler(SampleType::HiHat),
             patterns: vec![],
         });
     }

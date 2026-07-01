@@ -8,13 +8,42 @@ pub struct Pattern {
     pub steps: [bool; STEPS],
 }
 
+/// What plays when a track's step fires.
+///
+/// `Sampler` is a single one-shot voice. Future variants (e.g. `DrumRack`)
+/// would carry their own pad grid and trigger multiple voices per step.
+#[derive(Clone, Debug)]
+pub enum Instrument {
+    Sampler(SampleType),
+}
+
+impl Instrument {
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Instrument::Sampler(s) => s.short_label(),
+        }
+    }
+
+    pub fn badge_color(&self) -> u32 {
+        match self {
+            Instrument::Sampler(s) => s.badge_color(),
+        }
+    }
+
+    pub fn trigger(&self, audio: &crate::audio::AudioEngine) {
+        match self {
+            Instrument::Sampler(s) => audio.trigger(*s),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Track {
     pub name: String,
     pub color: u32,
     pub muted: bool,
     pub patterns: Vec<Pattern>,
-    pub sample: SampleType,
+    pub instrument: Instrument,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
