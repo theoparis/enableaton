@@ -4,7 +4,7 @@ use crate::ui::core::slider::Slider;
 use std::time::{Duration, Instant};
 
 use crate::audio::{AudioEngine, SampleType};
-use crate::models::{DragKind, DragState, Instrument, Pattern, Track};
+use crate::models::{DragKind, DragState, DrumPad, Instrument, Pattern, Track};
 use crate::theme::*;
 
 pub struct Daw {
@@ -119,39 +119,18 @@ impl Daw {
             },
             tracks: vec![
                 Track {
-                    name: "Kick".into(),
+                    name: "Drums".into(),
                     color: TRACK_COLORS[0],
                     muted: false,
-                    instrument: Instrument::Sampler(SampleType::Kick),
-                    patterns: pats(&[(0, 4), (4, 4), (12, 8), (24, 8)], kick_steps),
-                },
-                Track {
-                    name: "Snare".into(),
-                    color: TRACK_COLORS[1],
-                    muted: false,
-                    instrument: Instrument::Sampler(SampleType::Snare),
-                    patterns: pats(&[(0, 8), (16, 8)], snare_steps),
-                },
-                Track {
-                    name: "Hi-Hat".into(),
-                    color: TRACK_COLORS[2],
-                    muted: false,
-                    instrument: Instrument::Sampler(SampleType::HiHat),
-                    patterns: pats(&[(0, 16), (20, 4)], hihat_steps),
-                },
-                Track {
-                    name: "Open Hat".into(),
-                    color: TRACK_COLORS[3],
-                    muted: false,
-                    instrument: Instrument::Sampler(SampleType::OpenHat),
-                    patterns: pats(&[(4, 4), (20, 4)], openhat_steps),
-                },
-                Track {
-                    name: "Clap".into(),
-                    color: TRACK_COLORS[4],
-                    muted: false,
-                    instrument: Instrument::Sampler(SampleType::Clap),
-                    patterns: pats(&[(2, 6), (18, 10)], clap_steps),
+                    // One arrangement block covering the full song length.
+                    patterns: vec![Pattern { start: 0, len: 32, steps: [true; STEPS] }],
+                    instrument: Instrument::DrumRack(vec![
+                        DrumPad { name: "Kick".into(),     sample: SampleType::Kick,    color: TRACK_COLORS[0], steps: kick_steps,    muted: false },
+                        DrumPad { name: "Snare".into(),    sample: SampleType::Snare,   color: TRACK_COLORS[1], steps: snare_steps,   muted: false },
+                        DrumPad { name: "Hi-Hat".into(),   sample: SampleType::HiHat,   color: TRACK_COLORS[2], steps: hihat_steps,   muted: false },
+                        DrumPad { name: "Open Hat".into(), sample: SampleType::OpenHat, color: TRACK_COLORS[3], steps: openhat_steps, muted: false },
+                        DrumPad { name: "Clap".into(),     sample: SampleType::Clap,    color: TRACK_COLORS[4], steps: clap_steps,    muted: false },
+                    ]),
                 },
                 Track {
                     name: "Bass".into(),
@@ -220,10 +199,8 @@ impl Daw {
                                     let elapsed = this.play_pos - pat.start as f32;
                                     let step =
                                         (elapsed * steps_per_beat as f32).floor() as usize % STEPS;
-                                    if pat.steps[step] {
-                                        if let Some(audio) = &this.audio {
-                                            t.instrument.trigger(audio);
-                                        }
+                                    if let Some(audio) = &this.audio {
+                                        t.instrument.trigger_step(step, &pat.steps, audio);
                                     }
                                 }
                             }

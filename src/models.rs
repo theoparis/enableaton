@@ -8,31 +8,74 @@ pub struct Pattern {
     pub steps: [bool; STEPS],
 }
 
-/// What plays when a track's step fires.
+#[derive(Clone, Debug)]
+pub struct DrumPad {
+    pub name: String,
+    pub sample: SampleType,
+    pub color: u32,
+    pub steps: [bool; STEPS],
+    pub muted: bool,
+}
+
+/// What plays when a track fires.
 ///
-/// `Sampler` is a single one-shot voice. Future variants (e.g. `DrumRack`)
-/// would carry their own pad grid and trigger multiple voices per step.
+/// `Sampler` fires once per active pattern step. `DrumRack` owns its own per-pad
+/// step grid and fires each pad independently on every step inside an active pattern.
 #[derive(Clone, Debug)]
 pub enum Instrument {
     Sampler(SampleType),
+    DrumRack(Vec<DrumPad>),
 }
 
 impl Instrument {
     pub fn short_label(&self) -> &'static str {
         match self {
             Instrument::Sampler(s) => s.short_label(),
+            Instrument::DrumRack(_) => "DR",
         }
     }
 
     pub fn badge_color(&self) -> u32 {
         match self {
             Instrument::Sampler(s) => s.badge_color(),
+            Instrument::DrumRack(_) => 0x2a1535,
         }
     }
 
+    /// Preview trigger (e.g. clicking the track name): fires the first non-muted pad.
     pub fn trigger(&self, audio: &crate::audio::AudioEngine) {
         match self {
             Instrument::Sampler(s) => audio.trigger(*s),
+            Instrument::DrumRack(pads) => {
+                if let Some(pad) = pads.iter().find(|p| !p.muted) {
+                    audio.trigger(pad.sample);
+                }
+            }
+        }
+    }
+
+    /// Called every step inside an active arrangement pattern.
+    /// For Sampler, fires only when `pat_steps[step]` is set.
+    /// For DrumRack, ignores `pat_steps` and checks each pad's own grid.
+    pub fn trigger_step(
+        &self,
+        step: usize,
+        pat_steps: &[bool; STEPS],
+        audio: &crate::audio::AudioEngine,
+    ) {
+        match self {
+            Instrument::Sampler(s) => {
+                if pat_steps[step] {
+                    audio.trigger(*s);
+                }
+            }
+            Instrument::DrumRack(pads) => {
+                for pad in pads {
+                    if !pad.muted && pad.steps[step] {
+                        audio.trigger(pad.sample);
+                    }
+                }
+            }
         }
     }
 }
