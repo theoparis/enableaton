@@ -1,4 +1,5 @@
 mod beat;
+pub mod core;
 mod headers;
 mod pattern;
 mod transport;

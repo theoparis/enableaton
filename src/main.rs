@@ -24,7 +24,7 @@ fn main() {
                 ..Default::default()
             },
             move |_, cx| {
-                let entity = cx.new(|_| Daw::new());
+                let entity = cx.new(|cx| Daw::new(cx));
                 *slot_fill.borrow_mut() = Some(entity.clone());
                 entity
             },

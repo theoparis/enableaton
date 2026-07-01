@@ -228,15 +228,7 @@ impl Daw {
                     .items_center()
                     .gap_2()
                     .child(dim("MASTER"))
-                    .child(
-                        div()
-                            .w_24()
-                            .h_2()
-                            .bg(rgb(BORDER))
-                            .rounded_full()
-                            .overflow_hidden()
-                            .child(div().w(px(72.)).h_full().bg(rgb(ACCENT_DIM)).rounded_full()),
-                    ),
+                    .child(div().w_24().child(self.master_slider.clone())),
             )
     }
 }

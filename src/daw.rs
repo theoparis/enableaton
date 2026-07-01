@@ -1,4 +1,6 @@
-use gpui::{AppContext, Context, ScrollHandle, Task, point, px};
+use gpui::{AppContext, Context, Entity, ScrollHandle, Task, point, px};
+
+use crate::ui::core::slider::Slider;
 use std::time::{Duration, Instant};
 
 use crate::audio::{AudioEngine, SampleType};
@@ -25,10 +27,12 @@ pub struct Daw {
     pub bpm_drag_origin: Option<(f32, u32)>,
     /// Scroll handle for the pattern editor — used to auto-follow the playhead.
     pub pattern_scroll: ScrollHandle,
+    pub master_vol: f32,
+    pub master_slider: Entity<Slider>,
 }
 
 impl Daw {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut gpui::Context<Self>) -> Self {
         let audio = AudioEngine::start();
         if audio.is_none() {
             eprintln!("warning: no audio device found, sequencer will be silent");
@@ -98,6 +102,18 @@ impl Daw {
             selected_track: None,
             bpm_drag_origin: None,
             pattern_scroll: ScrollHandle::default(),
+            master_vol: 0.72,
+            master_slider: {
+                let daw_entity = cx.entity();
+                cx.new(|_| {
+                    Slider::new(0.72).on_change(move |val, app| {
+                        app.update_entity(&daw_entity, |daw, cx| {
+                            daw.master_vol = val;
+                            cx.notify();
+                        });
+                    })
+                })
+            },
             tracks: vec![
                 Track {
                     name: "Kick".into(),
