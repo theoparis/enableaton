@@ -82,16 +82,29 @@ impl Daw {
             let track = &self.tracks[t_idx];
             let color = track.color;
             let muted = track.muted;
-            let track_name = track.name.clone();
 
             let mut row = div()
+                .id(SharedString::from(format!("row-{t_idx}")))
                 .relative()
                 .flex_none()
                 .h(px(TRACK_H))
                 .w(px(total_w))
                 .bg(rgb(if muted { 0x111620 } else { BG }))
                 .border_b_1()
-                .border_color(rgb(BORDER));
+                .border_color(rgb(BORDER))
+                // Click on empty row space inserts the track's active pattern.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                        let scroll_x = f32::from(this.pattern_scroll.offset().x);
+                        let beat = ((f32::from(ev.position.x) - HEADER_W + scroll_x) / BEAT_PX)
+                            .floor()
+                            .max(0.0) as usize;
+                        this.selected_track = Some(t_idx);
+                        this.insert_clip(t_idx, beat);
+                        cx.notify();
+                    }),
+                );
 
             // Bar grid lines
             for bar in 0..=total_bars {
@@ -108,18 +121,21 @@ impl Daw {
                 );
             }
 
-            // Pattern blocks
-            let active_p_idx = Daw::active_pattern_idx(track, play_pos);
-            for p_idx in 0..track.patterns.len() {
-                let pat = &track.patterns[p_idx];
-                let x = pat.start as f32 * BEAT_PX;
+            // Clip blocks
+            let active_c_idx = track.clip_at(play_pos);
+            for c_idx in 0..track.clips.len() {
+                let clip = track.clips[c_idx];
+                let pat = &track.patterns[clip.pattern];
+                let x = clip.start as f32 * BEAT_PX;
                 let w = (pat.len as f32 * BEAT_PX - 1.0).max(4.0);
                 let blk_color = if muted { 0x1a2233u32 } else { color };
-                let resize_id = SharedString::from(format!("rsz-{t_idx}-{p_idx}"));
-                let move_id = SharedString::from(format!("pat-{t_idx}-{p_idx}"));
+                let resize_id = SharedString::from(format!("rsz-{t_idx}-{c_idx}"));
+                let move_id = SharedString::from(format!("clip-{t_idx}-{c_idx}"));
                 let pat_len = pat.len;
-                let name_clone = track_name.clone();
-                let is_active = active_p_idx == Some(p_idx);
+                let pat_name = pat.name.clone();
+                let is_active = active_c_idx == Some(c_idx);
+                let is_edited = self.selected_track == Some(t_idx)
+                    && track.active_pattern == clip.pattern;
 
                 let block = div()
                     .absolute()
@@ -139,11 +155,13 @@ impl Daw {
                         PLAYHEAD
                     } else if muted {
                         TEXT_DIM
+                    } else if is_edited {
+                        0x7fd8e8
                     } else {
                         ACCENT
                     }))
                     .overflow_hidden()
-                    // Label: name + length, clipped to block bounds
+                    // Label: pattern name + length, clipped to block bounds
                     .child(if w >= 44.0 {
                         div()
                             .absolute()
@@ -164,7 +182,7 @@ impl Daw {
                                     .opacity(0.85)
                                     .flex_shrink()
                                     .overflow_hidden()
-                                    .child(SharedString::from(name_clone)),
+                                    .child(SharedString::from(pat_name)),
                             )
                             .child(
                                 div()
@@ -172,12 +190,12 @@ impl Daw {
                                     .text_xs()
                                     .text_color(rgb(0xffffff))
                                     .opacity(0.45)
-                                    .child(SharedString::from(format!("{}b", pat_len))),
+                                    .child(SharedString::from(format!("{pat_len}b"))),
                             )
                     } else {
                         div()
                     })
-                    // Resize handle
+                    // Resize handle — resizes the pattern (all instances follow)
                     .child(
                         div()
                             .id(resize_id)
@@ -190,13 +208,15 @@ impl Daw {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
-                                    let pat = &this.tracks[t_idx].patterns[p_idx];
+                                    cx.stop_propagation();
+                                    let track = &this.tracks[t_idx];
+                                    let clip = track.clips[c_idx];
                                     this.drag = Some(crate::models::DragState {
                                         track_idx: t_idx,
-                                        pat_idx: p_idx,
+                                        clip_idx: c_idx,
                                         kind: DragKind::Resize,
-                                        orig_start: pat.start,
-                                        orig_len: pat.len,
+                                        orig_start: clip.start,
+                                        orig_len: track.patterns[clip.pattern].len,
                                         mouse_start_x: f32::from(ev.position.x),
                                     });
                                     cx.notify();
@@ -212,24 +232,33 @@ impl Daw {
                     .w(px(w))
                     .h(px(TRACK_H - 6.))
                     .cursor_grab()
+                    // Left: select pattern for editing + start move drag.
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
-                            let mx = f32::from(ev.position.x);
-                            let scroll_x = f32::from(this.pattern_scroll.offset().x);
-                            let pat = &this.tracks[t_idx].patterns[p_idx];
-                            let rel = mx - HEADER_W + scroll_x - pat.start as f32 * BEAT_PX;
-                            if rel < pat.len as f32 * BEAT_PX - 6.0 {
-                                this.drag = Some(crate::models::DragState {
-                                    track_idx: t_idx,
-                                    pat_idx: p_idx,
-                                    kind: DragKind::Move,
-                                    orig_start: pat.start,
-                                    orig_len: pat.len,
-                                    mouse_start_x: mx,
-                                });
-                                cx.notify();
-                            }
+                            cx.stop_propagation();
+                            let track = &mut this.tracks[t_idx];
+                            let clip = track.clips[c_idx];
+                            this.selected_track = Some(t_idx);
+                            track.active_pattern = clip.pattern;
+                            this.drag = Some(crate::models::DragState {
+                                track_idx: t_idx,
+                                clip_idx: c_idx,
+                                kind: DragKind::Move,
+                                orig_start: clip.start,
+                                orig_len: track.patterns[clip.pattern].len,
+                                mouse_start_x: f32::from(ev.position.x),
+                            });
+                            cx.notify();
+                        }),
+                    )
+                    // Right: remove this clip instance (pattern stays in the pool).
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, _: &MouseDownEvent, _w, cx| {
+                            cx.stop_propagation();
+                            this.tracks[t_idx].clips.remove(c_idx);
+                            cx.notify();
                         }),
                     )
                     .child(block);

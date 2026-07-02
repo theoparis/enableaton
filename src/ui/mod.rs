@@ -1,18 +1,21 @@
 mod beat;
 pub mod core;
+mod device;
 mod headers;
 mod pattern;
 mod piano_roll;
 mod transport;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseMoveEvent,
-    MouseUpEvent, Render, SharedString, Window, div, prelude::*, px, rgb,
+    AnyElement, ClickEvent, Context, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
+    Render, SharedString, Window, div, prelude::*, px, rgb,
 };
 
 use crate::daw::Daw;
 use crate::models::Instrument;
 use crate::theme::*;
+use core::button::tab_btn;
+use core::text::dim;
 
 impl Render for Daw {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -44,6 +47,9 @@ impl Render for Daw {
         } else {
             match self.selected_track.map(|i| &self.tracks[i].instrument) {
                 Some(Instrument::DrumRack(_)) => self.render_beat_panel(cx).into_any_element(),
+                Some(Instrument::Plugin(_)) if self.show_device => {
+                    self.render_device_panel(cx).into_any_element()
+                }
                 Some(Instrument::Sampler(_) | Instrument::Plugin(_)) => {
                     self.render_piano_roll(cx).into_any_element()
                 }
@@ -57,7 +63,8 @@ impl Render for Daw {
             .flex()
             .flex_col()
             .bg(rgb(BG))
-            // Global mouse handlers for BPM drag (mouse can move anywhere in window).
+            // Global mouse handlers for BPM / device-param drags (mouse can
+            // move anywhere in the window while dragging).
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
                 if ev.pressed_button != Some(MouseButton::Left) {
                     return;
@@ -67,11 +74,22 @@ impl Render for Daw {
                     this.bpm = (start_bpm as i32 + delta).max(20).min(300) as u32;
                     cx.notify();
                 }
+                // Device panel parameter drag: full bar height = full param range.
+                if let Some(drag) = this.param_drag.clone() {
+                    if let Instrument::Plugin(p) = &this.tracks[drag.track_idx].instrument {
+                        let spec = &p.params()[drag.param_idx];
+                        let delta_y = drag.start_y - f32::from(ev.position.y);
+                        let new_val = drag.start_val + delta_y / 120.0 * (spec.max - spec.min);
+                        p.set_param(drag.param_idx, new_val);
+                        cx.notify();
+                    }
+                }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _w, _cx| {
                     this.bpm_drag_origin = None;
+                    this.param_drag = None;
                 }),
             )
             .child(transport)
@@ -89,53 +107,63 @@ impl Render for Daw {
     }
 }
 
-// ── Shared UI helpers ─────────────────────────────────────────────────────────
+// ── Shared UI helpers built on core components ───────────────────────────────
 
-pub(super) fn dim(text: impl Into<SharedString>) -> impl IntoElement {
-    div().text_xs().text_color(rgb(TEXT_DIM)).child(text.into())
+/// Pattern selector strip: one tab per pattern in the track's pool plus a
+/// "＋" button that creates (and selects) a new pattern.
+pub(super) fn pattern_tabs(
+    t_idx: usize,
+    names: &[String],
+    active: usize,
+    cx: &mut Context<Daw>,
+) -> impl IntoElement {
+    let mut row = div().flex().flex_row().items_center().gap_1();
+    for (p_idx, name) in names.iter().enumerate() {
+        row = row.child(tab_btn(
+            SharedString::from(format!("pat-tab-{t_idx}-{p_idx}")),
+            name.clone(),
+            p_idx == active,
+            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.tracks[t_idx].active_pattern = p_idx;
+                cx.notify();
+            }),
+        ));
+    }
+    row.child(tab_btn(
+        SharedString::from(format!("pat-add-{t_idx}")),
+        "＋",
+        false,
+        cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            let idx = this.tracks[t_idx].add_pattern();
+            this.tracks[t_idx].active_pattern = idx;
+            cx.notify();
+        }),
+    ))
 }
 
-pub(super) fn transport_btn(
-    icon: &'static str,
-    label: &'static str,
-    id: &'static str,
-    active: bool,
-    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+/// NOTES / DEVICE panel switch for plugin tracks.
+pub(super) fn view_tabs(device_active: bool, cx: &mut Context<Daw>) -> impl IntoElement {
     div()
-        .id(SharedString::from(id))
         .flex()
         .flex_row()
         .items_center()
         .gap_1()
-        .px_2()
-        .py_1()
-        .rounded_sm()
-        .bg(rgb(if active { ACCENT_DIM } else { SURFACE2 }))
-        .text_color(rgb(if active { ACCENT } else { TEXT }))
-        .text_xs()
-        .cursor_pointer()
-        .hover(|s| s.bg(rgb(BORDER)))
-        .on_click(handler)
-        .child(div().text_sm().font_weight(FontWeight::BOLD).child(icon))
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(if active { ACCENT } else { TEXT_DIM }))
-                .child(label),
-        )
-}
-
-/// Small colored pill showing a 2-char instrument-type abbreviation.
-pub(super) fn sample_badge(label: impl Into<SharedString>, bg_color: u32) -> impl IntoElement {
-    div()
-        .flex_none()
-        .px_1()
-        .rounded_sm()
-        .bg(rgb(bg_color))
-        .text_xs()
-        .font_weight(FontWeight::BOLD)
-        .text_color(rgb(0xc8dff0))
-        .child(label.into())
+        .child(tab_btn(
+            "view-tab-notes",
+            "NOTES",
+            !device_active,
+            cx.listener(|this, _: &ClickEvent, _w, cx| {
+                this.show_device = false;
+                cx.notify();
+            }),
+        ))
+        .child(tab_btn(
+            "view-tab-device",
+            "DEVICE",
+            device_active,
+            cx.listener(|this, _: &ClickEvent, _w, cx| {
+                this.show_device = true;
+                cx.notify();
+            }),
+        ))
 }

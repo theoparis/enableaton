@@ -3,7 +3,8 @@ use gpui::{
     rgb,
 };
 
-use super::{dim, transport_btn};
+use super::core::button::transport_btn;
+use super::core::text::dim;
 use crate::daw::Daw;
 use crate::theme::*;
 

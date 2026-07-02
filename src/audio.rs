@@ -31,19 +31,64 @@ impl SampleType {
     pub fn badge_color(self) -> u32 {
         0x1e3550
     }
+
+    pub fn all() -> &'static [SampleType] {
+        &[
+            SampleType::Kick,
+            SampleType::Snare,
+            SampleType::HiHat,
+            SampleType::OpenHat,
+            SampleType::Clap,
+        ]
+    }
+
+    /// Next sample in the built-in bank (wraps around). Used for pad sample selection.
+    pub fn next(self) -> SampleType {
+        let all = Self::all();
+        let idx = all.iter().position(|s| *s == self).unwrap_or(0);
+        all[(idx + 1) % all.len()]
+    }
 }
 
 // ── Instrument plugin trait ───────────────────────────────────────────────────
+
+/// How a parameter is displayed and edited in the device panel.
+#[derive(Clone, Copy)]
+pub enum ParamKind {
+    /// Continuous value dragged vertically; shown with the given unit suffix.
+    Float(&'static str),
+    /// One of a fixed set of labelled choices; the value is the choice index.
+    Choice(&'static [&'static str]),
+}
+
+pub struct ParamSpec {
+    pub name: &'static str,
+    pub min: f32,
+    pub max: f32,
+    pub kind: ParamKind,
+    /// Section header the param is grouped under in the device panel.
+    pub group: &'static str,
+}
 
 pub trait InstrumentPlugin: Send + Sync {
     fn short_label(&self) -> &str;
     fn badge_color(&self) -> u32;
     /// Synthesize one note at `midi_pitch` (A4 = 69 = 440 Hz).
     fn render_note(&self, midi_pitch: u8) -> Box<dyn Source<Item = f32> + Send>;
+    /// Editable parameters, if any. Indices are stable and shared with
+    /// `get_param` / `set_param`.
+    fn params(&self) -> &'static [ParamSpec] {
+        &[]
+    }
+    fn get_param(&self, _idx: usize) -> f32 {
+        0.0
+    }
+    fn set_param(&self, _idx: usize, _val: f32) {}
 }
 
 // ── Wavetable synthesizer ─────────────────────────────────────────────────────
 
+#[derive(Clone, Copy)]
 pub enum WaveShape {
     Sine,
     Saw,
@@ -52,54 +97,103 @@ pub enum WaveShape {
 }
 
 const WAVETABLE_SIZE: usize = 2048;
+const N_SHAPES: usize = 4;
 
-#[allow(dead_code)]
+// Parameter indices — shared between the params table, getters and render_note.
+pub const P_SHAPE: usize = 0;
+pub const P_ATTACK: usize = 1;
+pub const P_DECAY: usize = 2;
+pub const P_SUSTAIN: usize = 3;
+pub const P_RELEASE: usize = 4;
+pub const P_NOTE_LEN: usize = 5;
+pub const P_AMP: usize = 6;
+pub const P_LFO_TARGET: usize = 7;
+pub const P_LFO_RATE: usize = 8;
+pub const P_LFO_DEPTH: usize = 9;
+const N_PARAMS: usize = 10;
+
+const SHAPE_NAMES: &[&str] = &["SIN", "SAW", "SQR", "TRI"];
+const LFO_TARGETS: &[&str] = &["OFF", "PITCH", "AMP"];
+
+const WT_PARAMS: [ParamSpec; N_PARAMS] = [
+    ParamSpec { name: "WAVE", min: 0.0, max: 3.0, kind: ParamKind::Choice(SHAPE_NAMES), group: "OSC" },
+    ParamSpec { name: "ATK", min: 0.001, max: 1.0, kind: ParamKind::Float("s"), group: "ENVELOPE" },
+    ParamSpec { name: "DEC", min: 0.001, max: 1.0, kind: ParamKind::Float("s"), group: "ENVELOPE" },
+    ParamSpec { name: "SUS", min: 0.0, max: 1.0, kind: ParamKind::Float(""), group: "ENVELOPE" },
+    ParamSpec { name: "REL", min: 0.01, max: 2.0, kind: ParamKind::Float("s"), group: "ENVELOPE" },
+    ParamSpec { name: "LEN", min: 0.05, max: 2.0, kind: ParamKind::Float("s"), group: "OSC" },
+    ParamSpec { name: "VOL", min: 0.0, max: 1.0, kind: ParamKind::Float(""), group: "OSC" },
+    ParamSpec { name: "DEST", min: 0.0, max: 2.0, kind: ParamKind::Choice(LFO_TARGETS), group: "LFO" },
+    ParamSpec { name: "RATE", min: 0.1, max: 20.0, kind: ParamKind::Float("Hz"), group: "LFO" },
+    ParamSpec { name: "DEPTH", min: 0.0, max: 1.0, kind: ParamKind::Float(""), group: "LFO" },
+];
+
+/// Wavetable synth with a runtime-editable parameter set (device panel edits
+/// params from the UI thread while notes render on the audio thread, hence
+/// the atomics).
 pub struct WavetableSynth {
-    pub wave_shape: WaveShape,
-    pub attack: f32,
-    pub decay: f32,
-    pub sustain: f32,
-    pub release: f32,
-    /// Duration the note is "held" before the release phase begins.
-    pub note_len: f32,
-    pub amplitude: f32,
+    params: [AtomicU32; N_PARAMS],
     label: &'static str,
     color: u32,
-    table: Arc<Vec<f32>>,
+    tables: [Arc<Vec<f32>>; N_SHAPES],
 }
 
 impl WavetableSynth {
     pub fn new(shape: WaveShape, label: &'static str, color: u32) -> Self {
-        let table = Arc::new(Self::build_table(&shape));
+        let tables = [
+            Arc::new(Self::build_table(&WaveShape::Sine)),
+            Arc::new(Self::build_table(&WaveShape::Saw)),
+            Arc::new(Self::build_table(&WaveShape::Square)),
+            Arc::new(Self::build_table(&WaveShape::Triangle)),
+        ];
+        let defaults: [f32; N_PARAMS] = [
+            match shape {
+                WaveShape::Sine => 0.0,
+                WaveShape::Saw => 1.0,
+                WaveShape::Square => 2.0,
+                WaveShape::Triangle => 3.0,
+            },
+            0.01, // attack
+            0.1,  // decay
+            0.7,  // sustain
+            0.3,  // release
+            0.5,  // note len
+            0.5,  // amplitude
+            0.0,  // lfo target (off)
+            5.0,  // lfo rate
+            0.3,  // lfo depth
+        ];
         Self {
-            wave_shape: shape,
-            attack: 0.01,
-            decay: 0.1,
-            sustain: 0.7,
-            release: 0.3,
-            note_len: 0.5,
-            amplitude: 0.5,
+            params: defaults.map(|v| AtomicU32::new(f32::to_bits(v))),
             label,
             color,
-            table,
+            tables,
         }
     }
 
-    pub fn with_adsr(mut self, attack: f32, decay: f32, sustain: f32, release: f32) -> Self {
-        self.attack = attack;
-        self.decay = decay;
-        self.sustain = sustain;
-        self.release = release;
+    fn get(&self, idx: usize) -> f32 {
+        f32::from_bits(self.params[idx].load(Ordering::Relaxed))
+    }
+
+    fn set(&self, idx: usize, val: f32) {
+        self.params[idx].store(f32::to_bits(val), Ordering::Relaxed);
+    }
+
+    pub fn with_adsr(self, attack: f32, decay: f32, sustain: f32, release: f32) -> Self {
+        self.set(P_ATTACK, attack);
+        self.set(P_DECAY, decay);
+        self.set(P_SUSTAIN, sustain);
+        self.set(P_RELEASE, release);
         self
     }
 
-    pub fn with_note_len(mut self, note_len: f32) -> Self {
-        self.note_len = note_len;
+    pub fn with_note_len(self, note_len: f32) -> Self {
+        self.set(P_NOTE_LEN, note_len);
         self
     }
 
-    pub fn with_amplitude(mut self, amplitude: f32) -> Self {
-        self.amplitude = amplitude;
+    pub fn with_amplitude(self, amplitude: f32) -> Self {
+        self.set(P_AMP, amplitude);
         self
     }
 
@@ -140,23 +234,42 @@ impl InstrumentPlugin for WavetableSynth {
         self.color
     }
 
+    fn params(&self) -> &'static [ParamSpec] {
+        &WT_PARAMS
+    }
+
+    fn get_param(&self, idx: usize) -> f32 {
+        self.get(idx)
+    }
+
+    fn set_param(&self, idx: usize, val: f32) {
+        let spec = &WT_PARAMS[idx];
+        self.set(idx, val.clamp(spec.min, spec.max));
+    }
+
     fn render_note(&self, midi_pitch: u8) -> Box<dyn Source<Item = f32> + Send> {
         let freq = 440.0 * 2.0_f64.powf((midi_pitch as f64 - 69.0) / 12.0);
         let sr = 44100_u32;
-        let total = ((self.note_len + self.release) * sr as f32) as u64;
+        let note_len = self.get(P_NOTE_LEN);
+        let release = self.get(P_RELEASE);
+        let total = ((note_len + release) * sr as f32) as u64;
+        let shape_idx = (self.get(P_SHAPE).round() as usize).min(N_SHAPES - 1);
         Box::new(WavetableSource {
-            table: Arc::clone(&self.table),
+            table: Arc::clone(&self.tables[shape_idx]),
             phase: 0.0,
             phase_inc: freq / sr as f64,
             current: 0,
             total,
             sample_rate: sr,
-            attack: self.attack,
-            decay: self.decay,
-            sustain: self.sustain,
-            release: self.release,
-            note_len: self.note_len,
-            amplitude: self.amplitude,
+            attack: self.get(P_ATTACK),
+            decay: self.get(P_DECAY),
+            sustain: self.get(P_SUSTAIN),
+            release,
+            note_len,
+            amplitude: self.get(P_AMP),
+            lfo_target: self.get(P_LFO_TARGET).round() as u8,
+            lfo_rate: self.get(P_LFO_RATE),
+            lfo_depth: self.get(P_LFO_DEPTH),
         })
     }
 }
@@ -174,6 +287,10 @@ struct WavetableSource {
     release: f32,
     note_len: f32,
     amplitude: f32,
+    /// 0 = off, 1 = pitch (vibrato), 2 = amplitude (tremolo).
+    lfo_target: u8,
+    lfo_rate: f32,
+    lfo_depth: f32,
 }
 
 impl WavetableSource {
@@ -208,8 +325,22 @@ impl Iterator for WavetableSource {
         let frac = (idx - idx.floor()) as f32;
         let sample = self.table[i0] * (1.0 - frac) + self.table[i1] * frac;
 
-        let out = (sample * self.envelope(t) * self.amplitude).clamp(-1.0, 1.0);
-        self.phase += self.phase_inc;
+        let lfo = (2.0 * PI * self.lfo_rate as f64 * t as f64).sin();
+        let amp_mod = if self.lfo_target == 2 {
+            // Tremolo: modulate down from full amplitude.
+            1.0 - self.lfo_depth * 0.5 * (1.0 + lfo as f32)
+        } else {
+            1.0
+        };
+
+        let out = (sample * self.envelope(t) * self.amplitude * amp_mod).clamp(-1.0, 1.0);
+        let pitch_mod = if self.lfo_target == 1 {
+            // Vibrato: ±1 semitone at full depth.
+            2.0_f64.powf(lfo * self.lfo_depth as f64 / 12.0)
+        } else {
+            1.0
+        };
+        self.phase += self.phase_inc * pitch_mod;
         self.current += 1;
         Some(out)
     }

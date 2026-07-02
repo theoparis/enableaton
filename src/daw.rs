@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use crate::audio::{AudioEngine, SampleType, WaveShape, WavetableSynth};
 use crate::models::{
-    DragKind, DragState, DrumPad, Instrument, Note, Pattern, PianoRollResize, Track,
+    Clip, DragKind, DragState, DrumPad, Instrument, Note, ParamDrag, PatternData, PianoRollResize,
+    Track,
 };
 use crate::theme::*;
 
@@ -34,6 +35,9 @@ pub struct Daw {
     pub piano_roll_resize: Option<PianoRollResize>,
     pub master_vol: f32,
     pub master_slider: Entity<Slider>,
+    /// Show the device (plugin settings) panel instead of the piano roll.
+    pub show_device: bool,
+    pub param_drag: Option<ParamDrag>,
 }
 
 impl Daw {
@@ -95,24 +99,29 @@ impl Daw {
                 .with_amplitude(0.4),
         );
 
-        fn steps_to_notes(
-            patterns: &[(usize, usize)],
-            steps: &[bool; STEPS],
-            pitch: u8,
-        ) -> Vec<Note> {
-            let mut notes = Vec::new();
-            for &(start, _len) in patterns {
-                for s in 0..STEPS {
-                    if steps[s] {
-                        notes.push(Note {
-                            pitch,
-                            start: start as f32 + s as f32 * 0.25,
-                            duration: 0.25,
-                        });
-                    }
-                }
+        // 16 steps @ 1/16 = 4 beats of pattern-relative notes.
+        fn steps_to_notes(steps: &[bool; STEPS], pitch: u8) -> Vec<Note> {
+            (0..STEPS)
+                .filter(|&s| steps[s])
+                .map(|s| Note {
+                    pitch,
+                    start: s as f32 * 0.25,
+                    duration: 0.25,
+                })
+                .collect()
+        }
+
+        fn note_pattern(name: &str, steps: &[bool; STEPS], pitch: u8) -> PatternData {
+            PatternData {
+                name: name.into(),
+                len: 4,
+                lanes: vec![],
+                notes: steps_to_notes(steps, pitch),
             }
-            notes
+        }
+
+        fn clips_at(starts: &[usize]) -> Vec<Clip> {
+            starts.iter().map(|&s| Clip { pattern: 0, start: s }).collect()
         }
 
         Self {
@@ -140,6 +149,8 @@ impl Daw {
             },
             piano_roll_zoom: 2.0,
             piano_roll_resize: None,
+            show_device: false,
+            param_drag: None,
             master_vol: 0.72,
             master_slider: {
                 let daw_entity = cx.entity();
@@ -160,46 +171,50 @@ impl Daw {
                     name: "Drums".into(),
                     color: TRACK_COLORS[0],
                     muted: false,
-                    patterns: vec![Pattern {
-                        start: 0,
-                        len: 32,
-                        steps: [true; STEPS],
+                    patterns: vec![PatternData {
+                        name: "P1".into(),
+                        len: 4,
+                        lanes: vec![
+                            kick_steps,
+                            snare_steps,
+                            hihat_steps,
+                            openhat_steps,
+                            clap_steps,
+                        ],
+                        notes: vec![],
                     }],
-                    notes: vec![],
+                    // Same pattern placed back-to-back = the loop.
+                    clips: clips_at(&[0, 4, 8, 12, 16, 20, 24, 28]),
+                    active_pattern: 0,
                     instrument: Instrument::DrumRack(vec![
                         DrumPad {
                             name: "Kick".into(),
                             sample: SampleType::Kick,
                             color: TRACK_COLORS[0],
-                            steps: kick_steps,
                             muted: false,
                         },
                         DrumPad {
                             name: "Snare".into(),
                             sample: SampleType::Snare,
                             color: TRACK_COLORS[1],
-                            steps: snare_steps,
                             muted: false,
                         },
                         DrumPad {
                             name: "Hi-Hat".into(),
                             sample: SampleType::HiHat,
                             color: TRACK_COLORS[2],
-                            steps: hihat_steps,
                             muted: false,
                         },
                         DrumPad {
                             name: "Open Hat".into(),
                             sample: SampleType::OpenHat,
                             color: TRACK_COLORS[3],
-                            steps: openhat_steps,
                             muted: false,
                         },
                         DrumPad {
                             name: "Clap".into(),
                             sample: SampleType::Clap,
                             color: TRACK_COLORS[4],
-                            steps: clap_steps,
                             muted: false,
                         },
                     ]),
@@ -208,45 +223,27 @@ impl Daw {
                     name: "Bass".into(),
                     color: TRACK_COLORS[5],
                     muted: false,
-                    patterns: [(2, 6), (10, 4), (18, 10)]
-                        .iter()
-                        .map(|&(s, l)| Pattern {
-                            start: s,
-                            len: l,
-                            steps: [false; STEPS],
-                        })
-                        .collect(),
-                    notes: steps_to_notes(&[(2, 6), (10, 4), (18, 10)], &bass_steps, 36),
+                    patterns: vec![note_pattern("P1", &bass_steps, 36)],
+                    clips: clips_at(&[2, 10, 18, 22]),
+                    active_pattern: 0,
                     instrument: Instrument::Plugin(bass_synth),
                 },
                 Track {
                     name: "Synth Lead".into(),
                     color: TRACK_COLORS[6],
                     muted: false,
-                    patterns: [(4, 8), (16, 12)]
-                        .iter()
-                        .map(|&(s, l)| Pattern {
-                            start: s,
-                            len: l,
-                            steps: [false; STEPS],
-                        })
-                        .collect(),
-                    notes: steps_to_notes(&[(4, 8), (16, 12)], &synth_steps, 65),
+                    patterns: vec![note_pattern("P1", &synth_steps, 65)],
+                    clips: clips_at(&[4, 8, 16, 24]),
+                    active_pattern: 0,
                     instrument: Instrument::Plugin(lead_synth),
                 },
                 Track {
                     name: "Pad".into(),
                     color: TRACK_COLORS[0],
                     muted: false,
-                    patterns: [(0usize, 28usize)]
-                        .iter()
-                        .map(|&(s, l)| Pattern {
-                            start: s,
-                            len: l,
-                            steps: [false; STEPS],
-                        })
-                        .collect(),
-                    notes: steps_to_notes(&[(0, 28)], &pad_steps, 60),
+                    patterns: vec![note_pattern("P1", &pad_steps, 60)],
+                    clips: clips_at(&[0, 8, 16, 24]),
+                    active_pattern: 0,
                     instrument: Instrument::Plugin(pad_synth),
                 },
             ],
@@ -280,16 +277,25 @@ impl Daw {
                         }
 
                         if let Some(audio) = &this.audio {
-                            // ── Piano roll: fire notes that start in [prev_pos, play_pos) ──
+                            // ── Piano roll: fire clip notes starting in [prev_pos, play_pos)
                             if !wrapped {
+                                let cur = this.play_pos;
                                 for t in &this.tracks {
-                                    if t.muted {
+                                    if t.muted || !t.instrument.uses_piano_roll() {
                                         continue;
                                     }
-                                    if t.instrument.uses_piano_roll() {
-                                        for note in &t.notes {
-                                            if note.start >= prev_pos && note.start < this.play_pos
-                                            {
+                                    for clip in &t.clips {
+                                        let pat = &t.patterns[clip.pattern];
+                                        let cs = clip.start as f32;
+                                        if prev_pos >= cs + pat.len as f32 || cur <= cs {
+                                            continue;
+                                        }
+                                        for note in &pat.notes {
+                                            if note.start >= pat.len as f32 {
+                                                continue;
+                                            }
+                                            let fire = cs + note.start;
+                                            if fire >= prev_pos && fire < cur {
                                                 t.instrument.trigger_note(note.pitch, audio);
                                             }
                                         }
@@ -297,7 +303,7 @@ impl Daw {
                                 }
                             }
 
-                            // ── Drum rack: fire on step boundaries ──────────────────────
+                            // ── Drum lanes: fire on step boundaries ─────────────────────
                             let steps_per_beat = 4_usize;
                             let global_step = (this.play_pos * steps_per_beat as f32) as i32;
                             if global_step != this.last_step {
@@ -306,16 +312,14 @@ impl Daw {
                                     if t.muted {
                                         continue;
                                     }
-                                    if let Some(pat) = t.patterns.iter().find(|pat| {
-                                        let start = pat.start as f32;
-                                        let end = (pat.start + pat.len) as f32;
-                                        this.play_pos >= start && this.play_pos < end
-                                    }) {
-                                        let elapsed = this.play_pos - pat.start as f32;
+                                    if let Some(c_idx) = t.clip_at(this.play_pos) {
+                                        let clip = &t.clips[c_idx];
+                                        let pat = &t.patterns[clip.pattern];
+                                        let elapsed = this.play_pos - clip.start as f32;
                                         let step = (elapsed * steps_per_beat as f32).floor()
                                             as usize
-                                            % STEPS;
-                                        t.instrument.trigger_step(step, &pat.steps, audio);
+                                            % pat.steps_in_loop();
+                                        t.instrument.trigger_step(step, &pat.lanes, audio);
                                     }
                                 }
                             }
@@ -368,16 +372,36 @@ impl Daw {
         };
         let delta = ((mouse_x - drag.mouse_start_x) / BEAT_PX).round() as isize;
         let total = (self.total_bars * self.beats_per_bar) as isize;
-        let pat = &mut self.tracks[drag.track_idx].patterns[drag.pat_idx];
+        let track = &mut self.tracks[drag.track_idx];
+        let clip = track.clips[drag.clip_idx];
         match drag.kind {
             DragKind::Move => {
-                pat.start = (drag.orig_start as isize + delta)
+                track.clips[drag.clip_idx].start = (drag.orig_start as isize + delta)
                     .max(0)
-                    .min(total - drag.orig_len as isize) as usize;
+                    .min(total - drag.orig_len as isize)
+                    as usize;
             }
             DragKind::Resize => {
-                pat.len = (drag.orig_len as isize + delta).max(1) as usize;
+                // Resizing a clip resizes the pattern — every instance follows.
+                track.patterns[clip.pattern].len = (drag.orig_len as isize + delta).max(1) as usize;
             }
+        }
+    }
+
+    /// Insert the track's active pattern on the timeline at `beat` (skipped
+    /// when it would overlap an existing clip).
+    pub fn insert_clip(&mut self, track_idx: usize, beat: usize) {
+        let track = &mut self.tracks[track_idx];
+        if track.patterns.is_empty() {
+            track.add_pattern();
+            track.active_pattern = 0;
+        }
+        let pattern = track.active_pattern.min(track.patterns.len() - 1);
+        let len = track.patterns[pattern].len;
+        let total = self.total_bars * self.beats_per_bar;
+        let start = beat.min(total.saturating_sub(len));
+        if !track.clip_overlaps(start, len) {
+            track.clips.push(Clip { pattern, start });
         }
     }
 
@@ -393,16 +417,9 @@ impl Daw {
                 "WT",
                 color,
             ))),
-            patterns: vec![],
-            notes: vec![],
+            patterns: vec![PatternData::new("P1", 4, 0)],
+            clips: vec![],
+            active_pattern: 0,
         });
-    }
-
-    pub fn active_pattern_idx(track: &crate::models::Track, play_pos: f32) -> Option<usize> {
-        track.patterns.iter().position(|pat| {
-            let start = pat.start as f32;
-            let end = (pat.start + pat.len) as f32;
-            play_pos >= start && play_pos < end
-        })
     }
 }

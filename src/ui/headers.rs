@@ -1,6 +1,8 @@
 use gpui::{ClickEvent, Context, FontWeight, IntoElement, SharedString, div, prelude::*, px, rgb};
 
-use super::{dim, sample_badge};
+use super::core::badge::sample_badge;
+use super::core::button::icon_btn;
+use super::core::text::dim;
 use crate::daw::Daw;
 use crate::theme::*;
 
@@ -95,28 +97,15 @@ impl Daw {
                             .child(name),
                     )
                     // Mute button
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("mute-{idx}")))
-                            .flex_none()
-                            .w(px(18.))
-                            .h(px(18.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_sm()
-                            .text_xs()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(if muted { ACCENT } else { TEXT_DIM }))
-                            .bg(rgb(if muted { ACCENT_DIM } else { SURFACE2 }))
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(rgb(ACCENT)))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                                this.tracks[idx].muted ^= true;
-                                cx.notify();
-                            }))
-                            .child("M"),
-                    ),
+                    .child(icon_btn(
+                        SharedString::from(format!("mute-{idx}")),
+                        "M",
+                        muted,
+                        cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                            this.tracks[idx].muted ^= true;
+                            cx.notify();
+                        }),
+                    )),
             );
         }
 
