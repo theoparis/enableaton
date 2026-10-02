@@ -11,7 +11,7 @@ pub use daw::Daw;
 actions!(daw, [Quit, TogglePlay]);
 
 fn main() {
-    gpui_platform::application().run(|cx| {
+    gpui_ce_platform::application().run(|cx| {
         let bounds = Bounds::centered(None, size(px(1280.), px(780.)), cx);
 
         let entity_slot: std::rc::Rc<std::cell::RefCell<Option<gpui::Entity<Daw>>>> =

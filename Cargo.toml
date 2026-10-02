@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gpui = { git = "https://github.com/gpui-ce/gpui-ce", version = "0.2.2", default-features = false, features = ["font-kit", "x11", "wayland"] }
-gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", version = "0.1.0", default-features = false, features = ["x11", "wayland", "runtime_shaders", "font-kit", "wgpu"] }
+gpui-ce = { git = "https://github.com/gpui-ce/gpui-ce", default-features = false, features = ["font-kit", "x11"] }
+gpui_ce_platform = { git = "https://github.com/gpui-ce/gpui-ce", default-features = false, features = ["x11", "font-kit", "macos-wgpu"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
 
 [profile.dev.package."*"]
@@ -14,5 +14,4 @@ debug = false
 
 [profile.dev]
 opt-level = 1
-lto = "off"
 debug = "line-tables-only"

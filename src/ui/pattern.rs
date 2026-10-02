@@ -134,8 +134,8 @@ impl Daw {
                 let pat_len = pat.len;
                 let pat_name = pat.name.clone();
                 let is_active = active_c_idx == Some(c_idx);
-                let is_edited = self.selected_track == Some(t_idx)
-                    && track.active_pattern == clip.pattern;
+                let is_edited =
+                    self.selected_track == Some(t_idx) && track.active_pattern == clip.pattern;
 
                 let block = div()
                     .absolute()
@@ -180,7 +180,7 @@ impl Daw {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(rgb(0xc8dff0))
                                     .opacity(0.85)
-                                    .flex_shrink()
+                                    .flex_shrink(1.0)
                                     .overflow_hidden()
                                     .child(SharedString::from(pat_name)),
                             )
