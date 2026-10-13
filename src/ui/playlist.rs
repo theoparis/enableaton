@@ -21,29 +21,39 @@ fn steps_preview(pat: &PatternData, color: u32, w: f32) -> gpui::Div {
     let loop_steps = pat.steps_in_loop();
     let total_steps = pat.len * 4;
     let step_w = w / total_steps.max(1) as f32;
-    let mut area = div()
+    let lanes = pat.lanes.clone();
+    let step_color = lighten(color, 0.6);
+    div()
         .flex_none()
         .relative()
         .w(px(w))
         .h(px(CLIP_BODY_H))
-        .overflow_hidden();
-    for (l, lane) in pat.lanes.iter().enumerate() {
-        for s in 0..total_steps {
-            if lane[s % loop_steps] {
-                area = area.child(
-                    div()
-                        .absolute()
-                        .left(px(s as f32 * step_w + 1.0))
-                        .top(px(2.0 + l as f32 * lane_h))
-                        .w(px((step_w - 2.0).max(1.5)))
-                        .h(px((lane_h - 1.0).max(1.5)))
-                        .rounded(px(1.))
-                        .bg(rgb(lighten(color, 0.6))),
-                );
-            }
-        }
-    }
-    area
+        .overflow_hidden()
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let o = bounds.origin;
+                    for (l, lane) in lanes.iter().enumerate() {
+                        for s in 0..total_steps {
+                            if lane[s % loop_steps] {
+                                super::core::paint::quad(
+                                    window,
+                                    o,
+                                    s as f32 * step_w + 1.0,
+                                    2.0 + l as f32 * lane_h,
+                                    (step_w - 2.0).max(1.5),
+                                    (lane_h - 1.0).max(1.5),
+                                    step_color,
+                                );
+                            }
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
 }
 
 fn clip_content(track: &Track, pat: &PatternData, color: u32, w: f32) -> AnyElement {
@@ -65,7 +75,6 @@ impl Daw {
         let play_pos = self.play_pos;
         let n_tracks = self.tracks.len();
         let n_rows = n_tracks.max(MIN_PLAYLIST_ROWS);
-        let ph_x = play_pos * BEAT_PX;
         let bar_w = bpb as f32 * BEAT_PX;
 
         let current = self.selected_track.map(|t| {
@@ -233,98 +242,87 @@ impl Daw {
                     cx.notify();
                 }),
             );
-        for bar in 0..total_bars {
-            let x = bar as f32 * bar_w;
-            ruler = ruler
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(x))
-                        .bottom_0()
-                        .w(px(1.))
-                        .h(px(7.))
-                        .bg(rgb(TEXT_DIM)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(x + 3.))
-                        .top(px(2.))
-                        .text_size(px(10.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(TEXT))
-                        .child(SharedString::from(format!("{}", bar + 1))),
-                );
-            for beat in 1..bpb {
-                ruler = ruler.child(
-                    div()
-                        .absolute()
-                        .left(px(x + beat as f32 * BEAT_PX))
-                        .bottom_0()
-                        .w(px(1.))
-                        .h(px(3.))
-                        .bg(rgb(TEXT_DIM)),
-                );
-            }
-        }
-        // Playhead marker (FL's downward triangle).
+        // Tick marks in one canvas; only the bar-number labels stay as text.
         ruler = ruler.child(
-            div()
-                .absolute()
-                .left(px(ph_x - 5.))
-                .bottom(px(-1.))
-                .w(px(11.))
-                .text_size(px(10.))
-                .text_color(rgb(PLAYHEAD))
-                .child("▼"),
-        );
-
-        // ── Grid background: 4-bar shading, bar and beat lines ─────────────────
-        let grid_h = n_rows as f32 * TRACK_H;
-        let mut grid_bg = div()
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let o = bounds.origin;
+                    let bottom = o.y + bounds.size.height;
+                    for bar in 0..total_bars {
+                        let x = bar as f32 * bar_w;
+                        for beat in 0..bpb {
+                            let h = if beat == 0 { 7.0 } else { 3.0 };
+                            window.paint_quad(gpui::fill(
+                                gpui::Bounds::new(
+                                    gpui::point(
+                                        o.x + px(x + beat as f32 * BEAT_PX),
+                                        bottom - px(h),
+                                    ),
+                                    gpui::size(px(1.), px(h)),
+                                ),
+                                rgb(TEXT_DIM),
+                            ));
+                        }
+                    }
+                },
+            )
             .absolute()
             .left_0()
-            .top(px(RULER_H))
-            .w(px(total_w))
-            .h(px(grid_h));
-        for seg in 0..total_bars.div_ceil(4) {
-            grid_bg = grid_bg.child(
+            .top_0()
+            .size_full(),
+        );
+        for bar in 0..total_bars {
+            ruler = ruler.child(
                 div()
                     .absolute()
-                    .left(px(seg as f32 * 4.0 * bar_w))
-                    .top_0()
-                    .w(px(4.0 * bar_w))
-                    .h_full()
-                    .bg(rgb(if seg % 2 == 0 { GRID_A } else { GRID_B })),
+                    .left(px(bar as f32 * bar_w + 3.))
+                    .top(px(2.))
+                    .text_size(px(10.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(TEXT))
+                    .child(SharedString::from(format!("{}", bar + 1))),
             );
         }
-        for beat in 0..total_beats {
-            let is_bar = beat % bpb == 0;
-            grid_bg = grid_bg.child(
-                div()
-                    .absolute()
-                    .left(px(beat as f32 * BEAT_PX))
-                    .top_0()
-                    .w(px(1.))
-                    .h_full()
-                    .bg(rgb(if is_bar {
+        // ── Grid background: 4-bar shading, bar and beat lines ─────────────────
+        // Painted as raw quads in one canvas: no per-line layout node.
+        let grid_h = n_rows as f32 * TRACK_H;
+        let grid_bg = canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let o = bounds.origin;
+                let mut quad = |x: f32, y: f32, w: f32, h: f32, color: u32| {
+                    window.paint_quad(gpui::fill(
+                        gpui::Bounds::new(
+                            gpui::point(o.x + px(x), o.y + px(y)),
+                            gpui::size(px(w), px(h)),
+                        ),
+                        rgb(color),
+                    ));
+                };
+                for seg in 0..total_bars.div_ceil(4) {
+                    let color = if seg % 2 == 0 { GRID_A } else { GRID_B };
+                    quad(seg as f32 * 4.0 * bar_w, 0.0, 4.0 * bar_w, grid_h, color);
+                }
+                let beat_color = mix(GRID_A, GRID_LINE, 0.4);
+                for beat in 0..total_beats {
+                    let color = if beat % bpb == 0 {
                         GRID_LINE
                     } else {
-                        mix(GRID_A, GRID_LINE, 0.4)
-                    })),
-            );
-        }
-        for row in 1..=n_rows {
-            grid_bg = grid_bg.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(row as f32 * TRACK_H - 1.))
-                    .w_full()
-                    .h(px(1.))
-                    .bg(rgb(GRID_LINE)),
-            );
-        }
+                        beat_color
+                    };
+                    quad(beat as f32 * BEAT_PX, 0.0, 1.0, grid_h, color);
+                }
+                for row in 1..=n_rows {
+                    quad(0.0, row as f32 * TRACK_H - 1.0, total_w, 1.0, GRID_LINE);
+                }
+            },
+        )
+        .absolute()
+        .left_0()
+        .top(px(RULER_H))
+        .w(px(total_w))
+        .h(px(grid_h));
 
         let mut pattern_col = div()
             .relative()
@@ -482,27 +480,21 @@ impl Daw {
             pattern_col = pattern_col.child(row);
         }
 
-        // Playhead line across all rows.
-        pattern_col = pattern_col.child(
-            div()
-                .absolute()
-                .left(px(ph_x))
-                .top(px(RULER_H))
-                .w(px(1.))
-                .h(px(grid_h))
-                .bg(rgb(PLAYHEAD)),
-        );
-
         let scroll_handle = self.pattern_scroll.clone();
         let origin = self.playlist_origin_x.clone();
+        let grid_cell = self.playlist_grid.clone();
         let grid = div()
             .flex_1()
             .relative()
             .overflow_hidden()
-            // Record the grid's window-space left edge for mouse → beat mapping.
+            // Record the grid's window-space bounds for mouse → beat mapping
+            // and for the playhead overlay drawn above this cached pane.
             .child(
                 canvas(
-                    move |bounds, _, _| origin.set(f32::from(bounds.left())),
+                    move |bounds, _, _| {
+                        origin.set(f32::from(bounds.left()));
+                        grid_cell.set(bounds);
+                    },
                     |_, _, _, _| {},
                 )
                 .absolute()
@@ -540,7 +532,7 @@ impl Daw {
                     .child(pattern_col),
             );
 
-        fl_window().flex_1().h_full().child(header).child(
+        fl_window().size_full().child(header).child(
             div()
                 .flex_1()
                 .flex()

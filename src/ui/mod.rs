@@ -3,13 +3,16 @@ mod channel_rack;
 pub mod core;
 mod device;
 mod mixer;
+mod panes;
 mod piano_roll;
 mod playlist;
 mod toolbar;
 
+pub use panes::{Panes, Ticker};
+
 use gpui::{
-    AnyElement, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Render, SharedString, Window, deferred, div, prelude::*, px, rgb,
+    ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Render, SharedString, StyleRefinement, Window, deferred, div, prelude::*, px, rgb,
 };
 
 use crate::daw::Daw;
@@ -82,7 +85,20 @@ impl Daw {
 
 impl Render for Daw {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let toolbar = self.render_toolbar(cx);
+        let panes = match &self.panes {
+            Some(p) => p.clone(),
+            None => {
+                let p = Panes::new(
+                    &cx.entity(),
+                    self.ticker.clone(),
+                    self.meter_clock.clone(),
+                    cx,
+                );
+                self.panes = Some(p.clone());
+                p
+            }
+        };
+        let full = || StyleRefinement::default().size_full();
 
         let mut workspace = div()
             .flex_1()
@@ -93,11 +109,13 @@ impl Render for Daw {
             .overflow_hidden();
 
         if self.show_browser {
-            workspace = workspace.child(self.render_browser(cx)).child(self.divider(
-                PaneEdge::Browser,
-                true,
-                cx,
-            ));
+            let style = StyleRefinement::default()
+                .flex_none()
+                .w(px(self.browser_w))
+                .h_full();
+            workspace = workspace
+                .child(panes.browser.clone().cached(style))
+                .child(self.divider(PaneEdge::Browser, true, cx));
         }
 
         // Middle column: channel rack above the piano roll / channel settings.
@@ -109,7 +127,6 @@ impl Render for Daw {
                 .flex()
                 .flex_col();
             if self.show_channel_rack {
-                let rack = self.render_channel_rack(cx);
                 let both = self.show_piano_roll;
                 mid = mid.child(
                     div()
@@ -118,24 +135,21 @@ impl Render for Daw {
                         .min_h(px(0.))
                         .when(both, |d| d.flex_none().h(px(self.rack_h)))
                         .when(!both, |d| d.flex_1())
-                        .child(rack),
+                        .child(panes.rack.clone().cached(full())),
                 );
                 if both {
                     mid = mid.child(self.divider(PaneEdge::Rack, false, cx));
                 }
             }
             if self.show_piano_roll {
-                let lower: AnyElement =
-                    match self.selected_track.map(|i| &self.tracks[i].instrument) {
-                        Some(Instrument::DrumRack(_)) => {
-                            self.render_drum_settings(cx).into_any_element()
-                        }
-                        Some(Instrument::Plugin(_)) if self.show_device => {
-                            self.render_device_panel(cx).into_any_element()
-                        }
-                        _ => self.render_piano_roll(cx).into_any_element(),
-                    };
-                mid = mid.child(div().flex_1().min_h(px(0.)).child(lower));
+                mid = mid.child(
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .relative()
+                        .child(panes.lower.clone().cached(full()))
+                        .child(panes.piano_roll_overlay.clone()),
+                );
             }
             workspace = workspace
                 .child(mid)
@@ -143,7 +157,14 @@ impl Render for Daw {
         }
 
         if self.show_playlist {
-            workspace = workspace.child(self.render_playlist(cx));
+            workspace = workspace.child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .relative()
+                    .child(panes.playlist.clone().cached(full()))
+                    .child(panes.playlist_overlay.clone()),
+            );
         } else {
             workspace = workspace.child(div().flex_1());
         }
@@ -157,7 +178,12 @@ impl Render for Daw {
                 .px(px(DOCK_PAD))
                 .pb(px(DOCK_PAD))
                 .child(self.divider(PaneEdge::Mixer, false, cx))
-                .child(div().flex_1().min_h(px(0.)).child(self.render_mixer(cx)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .child(panes.mixer.clone().cached(full())),
+                )
         });
 
         let backdrop = self.open_menu.is_some().then(|| {
@@ -217,7 +243,7 @@ impl Render for Daw {
                     this.ui_drag = None;
                 }),
             )
-            .child(toolbar)
+            .child(panes.toolbar.clone())
             .child(workspace)
             .children(mixer)
             .children(backdrop)

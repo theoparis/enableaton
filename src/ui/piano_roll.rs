@@ -81,14 +81,6 @@ impl Daw {
         let is_plugin = matches!(track.instrument, Instrument::Plugin(_));
         let pattern_names: Vec<String> = track.patterns.iter().map(|p| p.name.clone()).collect();
 
-        // Playhead in pattern-local coordinates: shown while any clip
-        // instance of this pattern is under the timeline playhead.
-        let local_ph = track.clips.iter().find_map(|c| {
-            let cs = c.start as f32;
-            (c.pattern == p_idx && self.play_pos >= cs && self.play_pos < cs + pat_beats)
-                .then_some(self.play_pos - cs)
-        });
-
         // Single scroll handle: .x = horizontal, .y = vertical (both ≤ 0).
         let scroll = self.piano_roll_scroll.clone();
         // Newly shown pattern: center the keyboard on its notes (or C4).
@@ -197,11 +189,69 @@ impl Daw {
             .flex()
             .flex_col();
 
-        let bpb = self.beats_per_bar;
+        // Row backgrounds, row borders and beat/bar lines are painted in one
+        // canvas behind the (transparent) click-target rows below.
+        let bpb_paint = self.beats_per_bar;
+        grid = grid.child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    use super::core::paint::quad;
+                    let o = bounds.origin;
+                    for row in 0..N_ROWS {
+                        let pitch = MAX_PITCH - row as u8;
+                        let bg = if is_black_key(pitch) {
+                            BLACK_ROW
+                        } else {
+                            WHITE_ROW
+                        };
+                        quad(window, o, 0.0, row as f32 * ROW_H, total_w, ROW_H, bg);
+                    }
+                    for beat in 1..pat_len {
+                        let c = if beat % bpb_paint == 0 {
+                            darken(GRID_LINE, 0.3)
+                        } else {
+                            GRID_LINE
+                        };
+                        quad(
+                            window,
+                            o,
+                            beat as f32 * beat_px,
+                            0.0,
+                            1.0,
+                            N_ROWS as f32 * ROW_H,
+                            c,
+                        );
+                    }
+                    for row in 0..N_ROWS {
+                        let pitch = MAX_PITCH - row as u8;
+                        let c = if matches!(pitch % 12, 0 | 5) {
+                            GRID_LINE
+                        } else {
+                            mix(WHITE_ROW, GRID_LINE, 0.5)
+                        };
+                        quad(
+                            window,
+                            o,
+                            0.0,
+                            (row + 1) as f32 * ROW_H - 1.0,
+                            total_w,
+                            1.0,
+                            c,
+                        );
+                    }
+                },
+            )
+            .absolute()
+            .left_0()
+            .top_0()
+            .w(px(total_w))
+            .h(px(total_keys_h)),
+        );
+
         let origin = self.piano_roll_origin_x.clone();
         for row in 0..N_ROWS {
             let pitch = MAX_PITCH - row as u8;
-            let black = is_black_key(pitch);
 
             let scroll_ref = scroll.clone();
             let origin_ref = origin.clone();
@@ -211,13 +261,6 @@ impl Daw {
                 .relative()
                 .w(px(total_w))
                 .h(px(ROW_H))
-                .bg(rgb(if black { BLACK_ROW } else { WHITE_ROW }))
-                .border_b_1()
-                .border_color(rgb(if matches!(pitch % 12, 0 | 5) {
-                    GRID_LINE
-                } else {
-                    mix(WHITE_ROW, GRID_LINE, 0.5)
-                }))
                 .cursor_crosshair()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -279,23 +322,6 @@ impl Daw {
                     }),
                 );
 
-            // Beat / bar grid lines.
-            for beat in 1..pat_len {
-                pitch_row = pitch_row.child(
-                    div()
-                        .absolute()
-                        .left(px(beat as f32 * beat_px))
-                        .top_0()
-                        .w(px(1.))
-                        .h_full()
-                        .bg(rgb(if beat % bpb == 0 {
-                            darken(GRID_LINE, 0.3)
-                        } else {
-                            GRID_LINE
-                        })),
-                );
-            }
-
             for note in notes_snapshot.iter().filter(|n| n.pitch == pitch) {
                 let nx = note.start * beat_px;
                 let nw = (note.duration * beat_px - 1.0).max(3.0);
@@ -333,18 +359,6 @@ impl Daw {
             grid = grid.child(pitch_row);
         }
 
-        if let Some(lp) = local_ph {
-            grid = grid.child(
-                div()
-                    .absolute()
-                    .left(px(lp * beat_px))
-                    .top_0()
-                    .w(px(1.))
-                    .h_full()
-                    .bg(rgb(PLAYHEAD)),
-            );
-        }
-
         // ── Layout ───────────────────────────────────────────────────────────────
         // Keyboard and velocity lane sit outside the scroll container and follow
         // its offset manually, so only one element owns the scroll handle.
@@ -358,13 +372,17 @@ impl Daw {
             .border_color(rgb(BORDER))
             .child(keys_col.absolute().top(px(scroll_y)).left(px(0.)));
 
+        let grid_cell = self.piano_roll_grid.clone();
         let grid_area = div()
             .flex_1()
             .h_full()
             .relative()
             .child(
                 canvas(
-                    move |bounds, _, _| origin.set(f32::from(bounds.left())),
+                    move |bounds, _, _| {
+                        origin.set(f32::from(bounds.left()));
+                        grid_cell.set(bounds);
+                    },
                     |_, _, _, _| {},
                 )
                 .absolute()

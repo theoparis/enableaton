@@ -1,6 +1,7 @@
 use gpui::{
-    ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, SharedString, div,
-    linear_color_stop, linear_gradient, prelude::*, px, rgb,
+    Bounds, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent,
+    SharedString, canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgb,
+    size,
 };
 
 use super::core::button::{led, raised, vgrad};
@@ -30,72 +31,82 @@ struct StripData {
     track: Option<usize>,
 }
 
-/// Stereo peak meter: two thin bars filled bottom-up green → yellow → red.
+/// Stereo peak meter: two thin bars filled bottom-up green → yellow, painted
+/// in one canvas (no per-bar layout nodes).
 fn meter(level: (f32, f32)) -> impl IntoElement {
-    let bar = |v: f32| {
-        div()
-            .flex_none()
-            .w(px(4.))
-            .h_full()
-            .flex()
-            .flex_col()
-            .justify_end()
-            .bg(rgb(LCD_BG))
-            .child(
-                div()
-                    .w_full()
-                    .h(gpui::relative(v.clamp(0.0, 1.0)))
-                    .bg(linear_gradient(
-                        0.,
-                        linear_color_stop(rgb(0x5fcf4a), 0.),
-                        linear_color_stop(rgb(0xd8e35a), 0.85),
-                    )),
-            )
-    };
-    div()
-        .flex_none()
-        .h_full()
-        .flex()
-        .flex_row()
-        .gap(px(1.))
-        .p(px(1.))
-        .rounded(px(1.))
-        .bg(rgb(BORDER))
-        .child(bar(level.0))
-        .child(bar(level.1))
-}
-
-/// Vertical fader groove with a cap at `value` (0..1).
-fn fader(value: f32) -> impl IntoElement {
     div()
         .flex_none()
         .relative()
-        .w(px(14.))
+        .w(px(11.))
         .h_full()
+        .rounded(px(1.))
+        .bg(rgb(BORDER))
         .child(
-            div()
-                .absolute()
-                .left(px(5.))
-                .top_0()
-                .w(px(4.))
-                .h_full()
-                .rounded_full()
-                .bg(rgb(LCD_BG)),
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let inner_h = f32::from(bounds.size.height) - 2.0;
+                    for (i, v) in [level.0, level.1].into_iter().enumerate() {
+                        let x = bounds.origin.x + px(1.0 + i as f32 * 5.0);
+                        let top = bounds.origin.y + px(1.0);
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(point(x, top), size(px(4.), px(inner_h))),
+                            rgb(LCD_BG),
+                        ));
+                        let fill_h = inner_h * v.clamp(0.0, 1.0);
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(
+                                point(x, top + px(inner_h - fill_h)),
+                                size(px(4.), px(fill_h)),
+                            ),
+                            linear_gradient(
+                                0.,
+                                linear_color_stop(rgb(0x5fcf4a), 0.),
+                                linear_color_stop(rgb(0xd8e35a), 0.85),
+                            ),
+                        ));
+                    }
+                },
+            )
+            .absolute()
+            .size_full(),
         )
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .top(gpui::relative(1.0 - value.clamp(0.0, 1.0)))
-                .mt(px(-5.))
-                .w(px(14.))
-                .h(px(10.))
-                .rounded(px(2.))
-                .bg(vgrad(0xb4bdc3, 0x6b757c))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .child(div().mt(px(3.)).h(px(1.)).w_full().bg(rgb(0x3a4248))),
+}
+
+/// Vertical fader groove with a cap at `value` (0..1), painted in one canvas.
+fn fader(value: f32) -> impl IntoElement {
+    div().flex_none().relative().w(px(14.)).h_full().child(
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let h = f32::from(bounds.size.height);
+                let o = bounds.origin;
+                window.paint_quad(gpui::quad(
+                    Bounds::new(point(o.x + px(5.), o.y), size(px(4.), px(h))),
+                    px(2.),
+                    rgb(LCD_BG),
+                    0.,
+                    gpui::transparent_black(),
+                    gpui::BorderStyle::default(),
+                ));
+                let cap_y = o.y + px(h * (1.0 - value.clamp(0.0, 1.0)) - 5.0);
+                window.paint_quad(gpui::quad(
+                    Bounds::new(point(o.x, cap_y), size(px(14.), px(10.))),
+                    px(2.),
+                    vgrad(0xb4bdc3, 0x6b757c),
+                    1.,
+                    rgb(BORDER),
+                    gpui::BorderStyle::default(),
+                ));
+                window.paint_quad(gpui::fill(
+                    Bounds::new(point(o.x + px(1.), cap_y + px(4.)), size(px(12.), px(1.))),
+                    rgb(0x3a4248),
+                ));
+            },
         )
+        .absolute()
+        .size_full(),
+    )
 }
 
 impl Daw {

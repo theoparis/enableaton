@@ -178,7 +178,7 @@ impl Daw {
                 .child("+"),
         );
 
-        fl_window().child(header).child(body)
+        fl_window().size_full().child(header).child(body)
     }
 
     fn render_channel_row(
@@ -409,35 +409,46 @@ pub(super) fn note_preview(notes: Vec<Note>, len: usize, color: u32, w: f32, h: 
     let beats = len.max(1) as f32;
     let note_h = (h / (span + 1.0)).clamp(2.0, 4.0);
 
-    let mut area = div()
+    let bar_color = darken(color, 0.45);
+    let note_color = lighten(color, 0.6);
+    div()
         .flex_none()
         .relative()
         .w(px(w))
         .h(px(h))
-        .overflow_hidden();
-    for b in 1..len {
-        area = area.child(
-            div()
-                .absolute()
-                .left(px(b as f32 / beats * w))
-                .top_0()
-                .w(px(1.))
-                .h_full()
-                .bg(rgb(darken(color, 0.45))),
-        );
-    }
-    for n in notes.iter().filter(|n| n.start < beats) {
-        let y = (1.0 - (n.pitch - lo) as f32 / span) * (h - note_h - 2.0) + 1.0;
-        area = area.child(
-            div()
-                .absolute()
-                .left(px(n.start / beats * w))
-                .top(px(y))
-                .w(px((n.duration / beats * w - 1.0).max(2.0)))
-                .h(px(note_h))
-                .rounded(px(1.))
-                .bg(rgb(lighten(color, 0.6))),
-        );
-    }
-    area
+        .overflow_hidden()
+        .child(
+            gpui::canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let o = bounds.origin;
+                    for b in 1..len {
+                        super::core::paint::quad(
+                            window,
+                            o,
+                            b as f32 / beats * w,
+                            0.0,
+                            1.0,
+                            h,
+                            bar_color,
+                        );
+                    }
+                    for n in notes.iter().filter(|n| n.start < beats) {
+                        let y = (1.0 - (n.pitch - lo) as f32 / span) * (h - note_h - 2.0) + 1.0;
+                        let nw = (n.duration / beats * w - 1.0).max(2.0);
+                        super::core::paint::quad(
+                            window,
+                            o,
+                            n.start / beats * w,
+                            y,
+                            nw,
+                            note_h,
+                            note_color,
+                        );
+                    }
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
 }

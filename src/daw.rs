@@ -1,4 +1,4 @@
-use gpui::{AppContext, Context, Entity, ScrollHandle, Task, point, px};
+use gpui::{AppContext, Bounds, Context, Entity, Pixels, ScrollHandle, Task, point, px};
 
 use crate::ui::core::slider::Slider;
 use std::cell::Cell;
@@ -37,6 +37,16 @@ pub struct Daw {
     pub playlist_origin_x: Rc<Cell<f32>>,
     /// Window-space x of the piano-roll note grid's left edge (recorded at paint).
     pub piano_roll_origin_x: Rc<Cell<f32>>,
+    /// Per-frame playback signal; only overlays and the toolbar observe it.
+    pub ticker: Entity<crate::ui::Ticker>,
+    /// ~20 Hz signal for the mixer's fake meters.
+    pub meter_clock: Entity<crate::ui::Ticker>,
+    pub panes: Option<crate::ui::Panes>,
+    pub tick_n: u32,
+    /// Window-space bounds of the playlist / piano-roll grids (recorded at
+    /// paint) so the playhead overlays can draw over cached panes.
+    pub playlist_grid: Rc<Cell<Bounds<Pixels>>>,
+    pub piano_roll_grid: Rc<Cell<Bounds<Pixels>>>,
     pub audio: Option<AudioEngine>,
     pub _tick_task: Option<Task<()>>,
     pub selected_track: Option<usize>,
@@ -95,6 +105,12 @@ impl Daw {
             show_mixer: true,
             playlist_origin_x: Rc::new(Cell::new(0.0)),
             piano_roll_origin_x: Rc::new(Cell::new(0.0)),
+            ticker: cx.new(|_| crate::ui::Ticker),
+            meter_clock: cx.new(|_| crate::ui::Ticker),
+            panes: None,
+            tick_n: 0,
+            playlist_grid: Rc::new(Cell::new(Bounds::default())),
+            piano_roll_grid: Rc::new(Cell::new(Bounds::default())),
             audio,
             _tick_task: None,
             // Open on the arp so the piano roll has content in view.
@@ -140,10 +156,9 @@ impl Daw {
         let mut last_tick = Instant::now();
         let task = cx.spawn(async move |this, cx| {
             loop {
-                cx.background_spawn(async {
-                    std::thread::sleep(Duration::from_millis(8));
-                })
-                .await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
 
                 let keep_going = this
                     .update(cx, |this, cx| {
@@ -161,6 +176,8 @@ impl Daw {
                         if wrapped {
                             this.play_pos = 0.0;
                         }
+                        let step_changed =
+                            wrapped || (this.play_pos * 4.0) as i32 != this.last_step;
 
                         if let Some(audio) = &this.audio {
                             // ── Piano roll: fire clip notes starting in [prev_pos, play_pos)
@@ -223,13 +240,37 @@ impl Daw {
 
                         this.last_play_pos = this.play_pos;
 
-                        // Auto-scroll the playlist (gpui scroll offsets are ≤ 0).
+                        // Re-center the view only on a transition: the playhead
+                        // crossing the right edge, or the loop wrapping. A
+                        // standing "off-screen" test would fight manual
+                        // scrolling every frame (gpui scroll offsets are ≤ 0).
                         let ph_x = this.play_pos * BEAT_PX;
-                        let target_offset = (ph_x - 150.0).max(0.0);
-                        this.pattern_scroll
-                            .set_offset(point(px(-target_offset), px(0.)));
+                        let prev_x = prev_pos * BEAT_PX;
+                        let view_left = -f32::from(this.pattern_scroll.offset().x);
+                        let edge =
+                            view_left + f32::from(this.pattern_scroll.bounds().size.width) - 40.0;
+                        let scrolled = wrapped || (prev_x <= edge && ph_x > edge);
+                        if scrolled {
+                            let target_offset = (ph_x - 150.0).max(0.0);
+                            this.pattern_scroll
+                                .set_offset(point(px(-target_offset), px(0.)));
+                        }
 
-                        cx.notify();
+                        // Panes are cached views observing `Daw`, so notify it
+                        // only when something they draw can have changed: a
+                        // 16th-step boundary (step cursor, active clip), a loop
+                        // wrap, or a playlist scroll jump. The playhead itself
+                        // is drawn by overlays fed by the per-frame ticker.
+                        if step_changed || scrolled {
+                            cx.notify();
+                        }
+                        this.tick_n = this.tick_n.wrapping_add(1);
+                        let ticker = this.ticker.clone();
+                        ticker.update(cx, |_, cx| cx.notify());
+                        if this.tick_n % 3 == 0 {
+                            let clock = this.meter_clock.clone();
+                            clock.update(cx, |_, cx| cx.notify());
+                        }
                         true
                     })
                     .unwrap_or(false);
