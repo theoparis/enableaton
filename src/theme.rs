@@ -48,6 +48,7 @@ pub const WINDOW_TITLE_H: f32 = 22.0;
 pub const BROWSER_W: f32 = 176.0;
 pub const MID_COL_W: f32 = 476.0;
 pub const MIXER_H: f32 = 236.0;
+pub const RACK_H: f32 = 250.0;
 
 pub const HEADER_W: f32 = 120.0;
 pub const RULER_H: f32 = 22.0;

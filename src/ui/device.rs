@@ -6,7 +6,7 @@ use gpui::{
 use super::core::badge::sample_badge;
 use super::core::button::{led, raised, tab_btn};
 use super::core::knob::knob;
-use super::core::panel::{fl_window, window_controls, window_title};
+use super::core::panel::{fl_window, window_title};
 use crate::audio::{ParamKind, SampleType};
 use crate::daw::Daw;
 use crate::models::{Instrument, ParamDrag};
@@ -73,7 +73,11 @@ impl Daw {
         )
         .child(div().flex_1())
         .child(super::view_tabs(true, cx))
-        .child(window_controls());
+        .child(super::close_ctl(
+            "close-dev",
+            |d| d.show_piano_roll = false,
+            cx,
+        ));
 
         // Group params by section, preserving first-seen order.
         let mut groups: Vec<(&'static str, Vec<usize>)> = Vec::new();
@@ -161,7 +165,12 @@ impl Daw {
                                         p.set_param(p_idx, c_idx as f32);
                                         // Preview the new sound.
                                         if let Some(audio) = &this.audio {
-                                            audio.trigger_plugin(p.as_ref(), Some(60), None);
+                                            audio.trigger_plugin(
+                                                p.as_ref(),
+                                                Some(60),
+                                                None,
+                                                this.gain(t_idx),
+                                            );
                                         }
                                     }
                                     cx.notify();
@@ -197,7 +206,11 @@ impl Daw {
             SharedString::from(format!("Channel settings - {} (Drum rack)", track.name)),
         )
         .child(div().flex_1())
-        .child(window_controls());
+        .child(super::close_ctl(
+            "close-dev",
+            |d| d.show_piano_roll = false,
+            cx,
+        ));
 
         let mut list = div()
             .id("drum-pads")
@@ -221,7 +234,7 @@ impl Daw {
                             pads[pad_idx].name = default_pad_name(sample).into();
                         }
                         if let Some(audio) = &this.audio {
-                            audio.trigger(sample);
+                            audio.trigger(sample, this.gain(t_idx));
                         }
                         cx.notify();
                     }),

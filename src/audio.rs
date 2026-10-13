@@ -523,8 +523,8 @@ impl AudioEngine {
             .store(f32::to_bits(vol.clamp(0.0, 1.0)), Ordering::Relaxed);
     }
 
-    pub fn trigger(&self, sample: SampleType) {
-        let vol = f32::from_bits(self.master_vol.load(Ordering::Relaxed));
+    pub fn trigger(&self, sample: SampleType, gain: f32) {
+        let vol = f32::from_bits(self.master_vol.load(Ordering::Relaxed)) * gain;
         let src: Box<dyn Source<Item = f32> + Send> = match sample {
             SampleType::Kick => Box::new(kick().amplify(vol)),
             SampleType::Snare => Box::new(snare().amplify(vol)),
@@ -540,9 +540,10 @@ impl AudioEngine {
         plugin: &dyn InstrumentPlugin,
         midi_pitch: Option<u8>,
         hold_secs: Option<f32>,
+        gain: f32,
     ) {
         let pitch = midi_pitch.unwrap_or(60);
-        let vol = f32::from_bits(self.master_vol.load(Ordering::Relaxed));
+        let vol = f32::from_bits(self.master_vol.load(Ordering::Relaxed)) * gain;
         let src = plugin.render_note(pitch, hold_secs);
         self.mixer.add(src.amplify(vol));
     }

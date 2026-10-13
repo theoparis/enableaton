@@ -119,15 +119,15 @@ impl Instrument {
     }
 
     /// Preview trigger (no pitch). Used for track header clicks.
-    pub fn trigger(&self, audio: &crate::audio::AudioEngine) {
+    pub fn trigger(&self, audio: &crate::audio::AudioEngine, gain: f32) {
         match self {
-            Instrument::Sampler(s) => audio.trigger(*s),
+            Instrument::Sampler(s) => audio.trigger(*s, gain),
             Instrument::DrumRack(pads) => {
                 if let Some(pad) = pads.iter().find(|p| !p.muted) {
-                    audio.trigger(pad.sample);
+                    audio.trigger(pad.sample, gain);
                 }
             }
-            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), None, None),
+            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), None, None, gain),
         }
     }
     /// Trigger with a specific MIDI pitch. `hold_secs` is the note length for
@@ -137,11 +137,12 @@ impl Instrument {
         pitch: u8,
         hold_secs: Option<f32>,
         audio: &crate::audio::AudioEngine,
+        gain: f32,
     ) {
         match self {
-            Instrument::Sampler(s) => audio.trigger(*s),
+            Instrument::Sampler(s) => audio.trigger(*s, gain),
             Instrument::DrumRack(_) => {}
-            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), Some(pitch), hold_secs),
+            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), Some(pitch), hold_secs, gain),
         }
     }
 
@@ -151,23 +152,82 @@ impl Instrument {
         step: usize,
         lanes: &[[bool; STEPS]],
         audio: &crate::audio::AudioEngine,
+        gain: f32,
     ) {
         match self {
             Instrument::Sampler(s) => {
                 if lanes.first().is_some_and(|lane| lane[step]) {
-                    audio.trigger(*s);
+                    audio.trigger(*s, gain);
                 }
             }
             Instrument::DrumRack(pads) => {
                 for (pad, lane) in pads.iter().zip(lanes) {
                     if !pad.muted && lane[step] {
-                        audio.trigger(pad.sample);
+                        audio.trigger(pad.sample, gain);
                     }
                 }
             }
             Instrument::Plugin(_) => {}
         }
     }
+}
+
+/// Per-track mixer insert state.
+#[derive(Clone, Copy, Debug)]
+pub struct Mix {
+    /// Fader position 0..=1 (0.8 = unity gain).
+    pub volume: f32,
+    /// -1 (left) ..= 1 (right). Stored and shown; not applied to audio yet.
+    pub pan: f32,
+}
+
+impl Default for Mix {
+    fn default() -> Self {
+        Self {
+            volume: 0.8,
+            pan: 0.0,
+        }
+    }
+}
+
+impl Mix {
+    pub fn gain(self) -> f32 {
+        self.volume / 0.8
+    }
+}
+
+/// Active mouse drag on a non-timeline control.
+#[derive(Clone, Copy, Debug)]
+pub enum UiDrag {
+    /// Pane divider; `start` is the pointer coordinate along the drag axis
+    /// and `orig` the pane size when the drag began.
+    Pane {
+        edge: PaneEdge,
+        start: f32,
+        orig: f32,
+    },
+    Fader {
+        track: Option<usize>,
+        start_y: f32,
+        orig: f32,
+    },
+    Pan {
+        track: usize,
+        start_x: f32,
+        orig: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PaneEdge {
+    /// Right edge of the browser.
+    Browser,
+    /// Right edge of the channel rack / piano roll column.
+    MidColumn,
+    /// Bottom edge of the channel rack.
+    Rack,
+    /// Top edge of the mixer.
+    Mixer,
 }
 
 #[derive(Clone, Debug)]

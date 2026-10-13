@@ -31,6 +31,10 @@ impl Slider {
     pub fn value(&self) -> f32 {
         self.value
     }
+
+    pub fn set_value(&mut self, value: f32) {
+        self.value = value.clamp(0.0, 1.0);
+    }
 }
 
 impl Render for Slider {

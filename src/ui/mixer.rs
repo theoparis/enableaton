@@ -1,18 +1,19 @@
 use gpui::{
-    ClickEvent, Context, FontWeight, IntoElement, SharedString, div, linear_color_stop,
-    linear_gradient, prelude::*, px, rgb,
+    ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, SharedString, div,
+    linear_color_stop, linear_gradient, prelude::*, px, rgb,
 };
 
 use super::core::button::{led, raised, vgrad};
 use super::core::knob::knob;
-use super::core::panel::{chip, fl_window, lcd, window_controls, window_title};
+use super::core::panel::{chip, fl_window, lcd, window_title};
 use crate::daw::Daw;
+use crate::models::UiDrag;
 use crate::theme::*;
 
 const SLOTS: usize = 8;
 const SLOT_PANEL_W: f32 = 196.0;
 const MASTER_STRIP_W: f32 = 52.0;
-/// Display-only fader position for inserts (tracks have no volume yet).
+/// Fader position shown on empty inserts.
 const DEFAULT_FADER: f32 = 0.8;
 
 struct StripData {
@@ -24,6 +25,7 @@ struct StripData {
     selected: bool,
     level: (f32, f32),
     fader: f32,
+    pan: f32,
     /// Track backing this insert, if any.
     track: Option<usize>,
 }
@@ -100,7 +102,7 @@ impl Daw {
     /// Fake but transport-reactive meter levels for a track insert.
     fn track_level(&self, t_idx: usize) -> (f32, f32) {
         let t = &self.tracks[t_idx];
-        if !self.playing || t.muted || t.clip_at(self.play_pos).is_none() {
+        if !self.playing || t.muted || self.pattern_at(t_idx, self.play_pos).is_none() {
             return (0.0, 0.0);
         }
         let decay = 1.0 - (self.play_pos * 2.0).fract();
@@ -126,6 +128,7 @@ impl Daw {
                     selected: false,
                     level: (0.0, 0.0),
                     fader: DEFAULT_FADER,
+                    pan: 0.0,
                     track: None,
                 });
                 continue;
@@ -140,7 +143,8 @@ impl Daw {
                 enabled: !track.muted,
                 selected: self.selected_track == Some(t_idx),
                 level,
-                fader: DEFAULT_FADER,
+                fader: self.mix[t_idx].volume,
+                pan: self.mix[t_idx].pan,
                 track: Some(t_idx),
             });
         }
@@ -157,6 +161,7 @@ impl Daw {
                     master_level.1 * self.master_vol,
                 ),
                 fader: self.master_vol,
+                pan: 0.0,
                 track: None,
             },
         );
@@ -237,7 +242,11 @@ impl Daw {
         let header = window_title("▥", "Mixer")
             .child(chip("Wide"))
             .child(div().flex_1())
-            .child(window_controls());
+            .child(super::close_ctl(
+                "close-mixer",
+                |d| d.show_mixer = false,
+                cx,
+            ));
 
         fl_window().size_full().child(header).child(
             div()
@@ -323,18 +332,59 @@ impl Daw {
                     }))
                     .child(SharedString::from(s.name)),
             )
-            .child(knob(0.5, 16., TEXT_BRIGHT))
+            .child({
+                let pan_knob = knob((s.pan + 1.0) / 2.0, 16., TEXT_BRIGHT);
+                match t_idx {
+                    Some(t) => pan_knob
+                        .id(SharedString::from(format!("pan-{}", s.num)))
+                        .cursor_col_resize()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                                cx.stop_propagation();
+                                this.ui_drag = Some(UiDrag::Pan {
+                                    track: t,
+                                    start_x: f32::from(ev.position.x),
+                                    orig: this.mix[t].pan,
+                                });
+                                cx.notify();
+                            }),
+                        )
+                        .into_any_element(),
+                    None => pan_knob.into_any_element(),
+                }
+            })
             // Meter + fader.
-            .child(
-                div()
+            .child({
+                let row = div()
+                    .id(SharedString::from(format!("fader-{}", s.num)))
                     .flex_1()
                     .flex()
                     .flex_row()
                     .gap(px(3.))
                     .py(px(4.))
                     .child(meter(s.level))
-                    .child(fader(s.fader)),
-            )
+                    .child(fader(s.fader));
+                if t_idx.is_some() || is_master {
+                    let fader_val = s.fader;
+                    row.cursor_ns_resize()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                                cx.stop_propagation();
+                                this.ui_drag = Some(UiDrag::Fader {
+                                    track: t_idx,
+                                    start_y: f32::from(ev.position.y),
+                                    orig: fader_val,
+                                });
+                                cx.notify();
+                            }),
+                        )
+                        .into_any_element()
+                } else {
+                    row.into_any_element()
+                }
+            })
             // Enable LED (mutes the backing track).
             .child(led(
                 SharedString::from(format!("strip-led-{}", s.num)),

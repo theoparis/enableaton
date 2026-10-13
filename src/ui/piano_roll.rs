@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use super::core::button::{icon_btn, vgrad};
-use super::core::panel::{chip, fl_window, window_controls, window_title};
+use super::core::panel::{chip, fl_window, window_title};
 use crate::daw::Daw;
 use crate::models::{Instrument, Note, PianoRollResize};
 use crate::theme::*;
@@ -49,11 +49,9 @@ impl Daw {
         let Some(t_idx) = self.selected_track else {
             return fl_window()
                 .size_full()
-                .child(
-                    window_title("♪", "Piano roll")
-                        .child(div().flex_1())
-                        .child(window_controls()),
-                )
+                .child(window_title("♪", "Piano roll").child(div().flex_1()).child(
+                    super::close_ctl("close-pr", |d| d.show_piano_roll = false, cx),
+                ))
                 .child(
                     div()
                         .flex_1()
@@ -133,7 +131,11 @@ impl Daw {
                 cx.notify();
             }),
         ))
-        .child(window_controls());
+        .child(super::close_ctl(
+            "close-pr",
+            |d| d.show_piano_roll = false,
+            cx,
+        ));
 
         // ── Piano keyboard ──────────────────────────────────────────────────────
         let total_keys_h = N_ROWS as f32 * ROW_H;
@@ -265,9 +267,12 @@ impl Daw {
                                 duration: NOTE_DUR,
                             });
                             if let Some(audio) = &this.audio {
-                                this.tracks[t_idx]
-                                    .instrument
-                                    .trigger_note(pitch, None, audio);
+                                this.tracks[t_idx].instrument.trigger_note(
+                                    pitch,
+                                    None,
+                                    audio,
+                                    this.gain(t_idx),
+                                );
                             }
                         }
                         cx.notify();

@@ -48,26 +48,27 @@ pub fn window_title(glyph: &'static str, title: impl Into<SharedString>) -> Div 
         )
 }
 
-/// Decorative minimize/maximize/close cluster at the right of a title bar.
-pub fn window_controls() -> impl IntoElement {
+/// Close button at the right of a title bar; `on_close` hides the window.
+pub fn window_controls(
+    id: &'static str,
+    on_close: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> impl IntoElement {
     div()
+        .id(id)
         .flex_none()
+        .w(px(15.))
+        .h(px(13.))
         .flex()
-        .flex_row()
-        .gap(px(3.))
-        .children(["▁", "□", "✕"].map(|g| {
-            div()
-                .w(px(13.))
-                .h(px(13.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(2.))
-                .text_size(px(8.))
-                .text_color(rgb(TEXT_DIM))
-                .bg(rgb(darken(TITLE_BOTTOM, 0.2)))
-                .child(g)
-        }))
+        .items_center()
+        .justify_center()
+        .rounded(px(2.))
+        .text_size(px(8.))
+        .text_color(rgb(TEXT_DIM))
+        .bg(rgb(darken(TITLE_BOTTOM, 0.2)))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgb(RED)).text_color(rgb(TEXT_BRIGHT)))
+        .on_click(on_close)
+        .child("✕")
 }
 
 /// Small recessed info pill ("1/16", "BAR 3", zoom %, …).

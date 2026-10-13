@@ -5,7 +5,7 @@ use gpui::{
 
 use super::channel_rack::note_preview;
 use super::core::button::{led, raised, vgrad};
-use super::core::panel::{chip, fl_window, window_controls, window_title};
+use super::core::panel::{chip, fl_window, window_title};
 use crate::daw::Daw;
 use crate::models::{DragKind, DragState, PatternData, Track};
 use crate::theme::*;
@@ -95,7 +95,11 @@ impl Daw {
                     .child("Snap"),
             )
             .child(chip("Beat"))
-            .child(window_controls());
+            .child(super::close_ctl(
+                "close-pl",
+                |d| d.show_playlist = false,
+                cx,
+            ));
 
         // ── Track headers (left column) ────────────────────────────────────────
         let mut headers = div()
@@ -156,9 +160,7 @@ impl Daw {
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                         this.selected_track = Some(idx);
-                        if let Some(audio) = &this.audio {
-                            this.tracks[idx].instrument.trigger(audio);
-                        }
+                        this.preview_track(idx);
                         cx.notify();
                     }))
                     .child(div().flex_none().w(px(4.)).h_full().bg(rgb(t.color)))

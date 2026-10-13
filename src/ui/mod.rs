@@ -8,17 +8,77 @@ mod playlist;
 mod toolbar;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
-    Render, SharedString, Window, div, prelude::*, px, rgb,
+    AnyElement, ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Render, SharedString, Window, deferred, div, prelude::*, px, rgb,
 };
 
 use crate::daw::Daw;
-use crate::models::Instrument;
+use crate::models::{Instrument, PaneEdge, UiDrag};
 use crate::theme::*;
 use core::button::tab_btn;
+use core::panel::window_controls;
 
-/// Gap between docked windows.
-const DOCK_GAP: f32 = 3.0;
+/// Thickness of the draggable divider between docked windows.
+const DIVIDER: f32 = 4.0;
+/// Outer padding of the workspace.
+const DOCK_PAD: f32 = 3.0;
+
+/// Close button for a docked window; `hide` clears its visibility flag.
+pub(super) fn close_ctl(
+    id: &'static str,
+    hide: fn(&mut Daw),
+    cx: &mut Context<Daw>,
+) -> impl IntoElement {
+    window_controls(
+        id,
+        cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            hide(this);
+            cx.notify();
+        }),
+    )
+}
+
+impl Daw {
+    fn pane_size(&self, edge: PaneEdge) -> f32 {
+        match edge {
+            PaneEdge::Browser => self.browser_w,
+            PaneEdge::MidColumn => self.mid_w,
+            PaneEdge::Rack => self.rack_h,
+            PaneEdge::Mixer => self.mixer_h,
+        }
+    }
+
+    /// Draggable divider. `vertical` dividers (a vertical bar) resize
+    /// horizontally; the others resize vertically.
+    fn divider(&self, edge: PaneEdge, vertical: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let base = div()
+            .id(SharedString::from(format!("divider-{edge:?}")))
+            .flex_none()
+            .hover(|s| s.bg(rgb(ACCENT_DIM)));
+        let base = if vertical {
+            base.w(px(DIVIDER)).h_full().cursor_col_resize()
+        } else {
+            base.h(px(DIVIDER)).w_full().cursor_row_resize()
+        };
+        base.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                cx.stop_propagation();
+                let pos = if vertical {
+                    ev.position.x
+                } else {
+                    ev.position.y
+                };
+                this.ui_drag = Some(UiDrag::Pane {
+                    edge,
+                    start: f32::from(pos),
+                    orig: this.pane_size(edge),
+                });
+                cx.notify();
+            }),
+        )
+    }
+}
 
 impl Render for Daw {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -29,33 +89,40 @@ impl Render for Daw {
             .min_h(px(0.))
             .flex()
             .flex_row()
-            .gap(px(DOCK_GAP))
-            .p(px(DOCK_GAP))
+            .p(px(DOCK_PAD))
             .overflow_hidden();
 
         if self.show_browser {
-            workspace = workspace.child(self.render_browser(cx));
+            workspace = workspace.child(self.render_browser(cx)).child(self.divider(
+                PaneEdge::Browser,
+                true,
+                cx,
+            ));
         }
 
         // Middle column: channel rack above the piano roll / channel settings.
         if self.show_channel_rack || self.show_piano_roll {
             let mut mid = div()
                 .flex_none()
-                .w(px(MID_COL_W))
+                .w(px(self.mid_w))
                 .h_full()
                 .flex()
-                .flex_col()
-                .gap(px(DOCK_GAP));
+                .flex_col();
             if self.show_channel_rack {
                 let rack = self.render_channel_rack(cx);
+                let both = self.show_piano_roll;
                 mid = mid.child(
                     div()
                         .flex()
                         .flex_col()
-                        .when(self.show_piano_roll, |d| d.flex_none().max_h(px(300.)))
-                        .when(!self.show_piano_roll, |d| d.flex_1())
+                        .min_h(px(0.))
+                        .when(both, |d| d.flex_none().h(px(self.rack_h)))
+                        .when(!both, |d| d.flex_1())
                         .child(rack),
                 );
+                if both {
+                    mid = mid.child(self.divider(PaneEdge::Rack, false, cx));
+                }
             }
             if self.show_piano_roll {
                 let lower: AnyElement =
@@ -70,18 +137,47 @@ impl Render for Daw {
                     };
                 mid = mid.child(div().flex_1().min_h(px(0.)).child(lower));
             }
-            workspace = workspace.child(mid);
+            workspace = workspace
+                .child(mid)
+                .child(self.divider(PaneEdge::MidColumn, true, cx));
         }
 
-        workspace = workspace.child(self.render_playlist(cx));
+        if self.show_playlist {
+            workspace = workspace.child(self.render_playlist(cx));
+        } else {
+            workspace = workspace.child(div().flex_1());
+        }
 
         let mixer = self.show_mixer.then(|| {
             div()
                 .flex_none()
-                .h(px(MIXER_H))
-                .px(px(DOCK_GAP))
-                .pb(px(DOCK_GAP))
-                .child(self.render_mixer(cx))
+                .flex()
+                .flex_col()
+                .h(px(self.mixer_h + DIVIDER))
+                .px(px(DOCK_PAD))
+                .pb(px(DOCK_PAD))
+                .child(self.divider(PaneEdge::Mixer, false, cx))
+                .child(div().flex_1().min_h(px(0.)).child(self.render_mixer(cx)))
+        });
+
+        let backdrop = self.open_menu.is_some().then(|| {
+            deferred(
+                div()
+                    .id("menu-backdrop")
+                    .occlude()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _w, cx| {
+                            this.open_menu = None;
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .priority(1)
         });
 
         div()
@@ -90,26 +186,27 @@ impl Render for Daw {
             .flex()
             .flex_col()
             .bg(rgb(BG))
-            // Global mouse handlers for BPM / device-param drags (mouse can
-            // move anywhere in the window while dragging).
+            // Global mouse handlers for drags (the pointer can leave the
+            // control while dragging).
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
                 if ev.pressed_button != Some(MouseButton::Left) {
                     return;
                 }
+                this.apply_ui_drag(f32::from(ev.position.x), f32::from(ev.position.y), cx);
                 if let Some((start_y, start_bpm)) = this.bpm_drag_origin {
                     let delta = ((start_y - f32::from(ev.position.y)) / 1.5) as i32;
-                    this.bpm = (start_bpm as i32 + delta).max(20).min(300) as u32;
+                    this.bpm = (start_bpm as i32 + delta).clamp(20, 300) as u32;
                     cx.notify();
                 }
                 // Device panel parameter drag: full bar height = full param range.
-                if let Some(drag) = this.param_drag.clone() {
-                    if let Instrument::Plugin(p) = &this.tracks[drag.track_idx].instrument {
-                        let spec = &p.params()[drag.param_idx];
-                        let delta_y = drag.start_y - f32::from(ev.position.y);
-                        let new_val = drag.start_val + delta_y / 120.0 * (spec.max - spec.min);
-                        p.set_param(drag.param_idx, new_val);
-                        cx.notify();
-                    }
+                if let Some(drag) = this.param_drag.clone()
+                    && let Instrument::Plugin(p) = &this.tracks[drag.track_idx].instrument
+                {
+                    let spec = &p.params()[drag.param_idx];
+                    let delta_y = drag.start_y - f32::from(ev.position.y);
+                    let new_val = drag.start_val + delta_y / 120.0 * (spec.max - spec.min);
+                    p.set_param(drag.param_idx, new_val);
+                    cx.notify();
                 }
             }))
             .on_mouse_up(
@@ -117,11 +214,13 @@ impl Render for Daw {
                 cx.listener(|this, _: &MouseUpEvent, _w, _cx| {
                     this.bpm_drag_origin = None;
                     this.param_drag = None;
+                    this.ui_drag = None;
                 }),
             )
             .child(toolbar)
             .child(workspace)
             .children(mixer)
+            .children(backdrop)
     }
 }
 

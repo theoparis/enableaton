@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use crate::audio::{AudioEngine, WaveShape, WavetableSynth};
 use crate::models::{
-    Clip, DragKind, DragState, Instrument, ParamDrag, PatternData, PianoRollResize, Track,
+    Clip, DragKind, DragState, Instrument, Mix, PaneEdge, ParamDrag, PatternData, PianoRollResize,
+    Track, UiDrag,
 };
 use crate::theme::*;
 
@@ -52,6 +53,20 @@ pub struct Daw {
     /// Show the device (plugin settings) panel instead of the piano roll.
     pub show_device: bool,
     pub param_drag: Option<ParamDrag>,
+    /// Per-track mixer state, parallel to `tracks`.
+    pub mix: Vec<Mix>,
+    pub ui_drag: Option<UiDrag>,
+    /// Index into the toolbar menu bar of the open dropdown.
+    pub open_menu: Option<usize>,
+    /// Transient message shown on the toolbar hint line.
+    pub status: Option<String>,
+    pub show_playlist: bool,
+    pub browser_w: f32,
+    pub mid_w: f32,
+    pub rack_h: f32,
+    pub mixer_h: f32,
+    /// Browser tree expansion: current project, generators, patterns.
+    pub expanded: [bool; 3],
 }
 
 impl Daw {
@@ -61,6 +76,7 @@ impl Daw {
             eprintln!("warning: no audio device found, sequencer will be silent");
         }
 
+        let tracks = crate::demo::tracks();
         Self {
             playing: false,
             recording: false,
@@ -106,7 +122,17 @@ impl Daw {
                     })
                 })
             },
-            tracks: crate::demo::tracks(),
+            mix: vec![Mix::default(); tracks.len()],
+            tracks,
+            ui_drag: None,
+            open_menu: None,
+            status: None,
+            show_playlist: true,
+            browser_w: BROWSER_W,
+            mid_w: MID_COL_W,
+            rack_h: RACK_H,
+            mixer_h: MIXER_H,
+            expanded: [true, true, false],
         }
     }
 
@@ -130,7 +156,7 @@ impl Daw {
                         let beats_per_tick = this.bpm as f32 / 60.0 * elapsed_secs;
                         let prev_pos = this.play_pos;
                         this.play_pos += beats_per_tick;
-                        let total = (this.total_bars * this.beats_per_bar) as f32;
+                        let total = this.loop_len();
                         let wrapped = this.play_pos >= total;
                         if wrapped {
                             this.play_pos = 0.0;
@@ -140,13 +166,13 @@ impl Daw {
                             // ── Piano roll: fire clip notes starting in [prev_pos, play_pos)
                             if !wrapped {
                                 let cur = this.play_pos;
-                                for t in &this.tracks {
+                                for (ti, t) in this.tracks.iter().enumerate() {
                                     if t.muted || !t.instrument.uses_piano_roll() {
                                         continue;
                                     }
-                                    for clip in &t.clips {
-                                        let pat = &t.patterns[clip.pattern];
-                                        let cs = clip.start as f32;
+                                    let gain = this.gain(ti);
+                                    for (pi, cs) in this.instances(ti) {
+                                        let pat = &t.patterns[pi];
                                         if prev_pos >= cs + pat.len as f32 || cur <= cs {
                                             continue;
                                         }
@@ -161,6 +187,7 @@ impl Daw {
                                                     note.pitch,
                                                     Some(hold),
                                                     audio,
+                                                    gain,
                                                 );
                                             }
                                         }
@@ -173,18 +200,22 @@ impl Daw {
                             let global_step = (this.play_pos * steps_per_beat as f32) as i32;
                             if global_step != this.last_step {
                                 this.last_step = global_step;
-                                for t in &this.tracks {
+                                for (ti, t) in this.tracks.iter().enumerate() {
                                     if t.muted {
                                         continue;
                                     }
-                                    if let Some(c_idx) = t.clip_at(this.play_pos) {
-                                        let clip = &t.clips[c_idx];
-                                        let pat = &t.patterns[clip.pattern];
-                                        let elapsed = this.play_pos - clip.start as f32;
+                                    if let Some((pi, cs)) = this.pattern_at(ti, this.play_pos) {
+                                        let pat = &t.patterns[pi];
+                                        let elapsed = this.play_pos - cs;
                                         let step = (elapsed * steps_per_beat as f32).floor()
                                             as usize
                                             % pat.steps_in_loop();
-                                        t.instrument.trigger_step(step, &pat.lanes, audio);
+                                        t.instrument.trigger_step(
+                                            step,
+                                            &pat.lanes,
+                                            audio,
+                                            this.gain(ti),
+                                        );
                                     }
                                 }
                             }
@@ -213,6 +244,96 @@ impl Daw {
 
     pub fn stop_tick(&mut self) {
         self._tick_task = None;
+    }
+
+    /// Length of the transport loop in beats: the whole song, or in pattern
+    /// mode the selected track's active pattern.
+    pub fn loop_len(&self) -> f32 {
+        if !self.song_mode
+            && let Some(t) = self.selected_track.and_then(|i| self.tracks.get(i))
+            && let Some(p) = t.patterns.get(t.active_pattern)
+        {
+            return p.len.max(1) as f32;
+        }
+        (self.total_bars * self.beats_per_bar) as f32
+    }
+
+    /// `(pattern, start beat)` instances of track `t` that the transport
+    /// plays. Pattern mode plays only the selected track's active pattern.
+    pub fn instances(&self, t: usize) -> Vec<(usize, f32)> {
+        let track = &self.tracks[t];
+        if self.song_mode {
+            track
+                .clips
+                .iter()
+                .map(|c| (c.pattern, c.start as f32))
+                .collect()
+        } else if self.selected_track == Some(t) && !track.patterns.is_empty() {
+            vec![(track.active_pattern.min(track.patterns.len() - 1), 0.0)]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Pattern instance of track `t` under beat `pos`, as `(pattern, start)`.
+    pub fn pattern_at(&self, t: usize, pos: f32) -> Option<(usize, f32)> {
+        let track = &self.tracks[t];
+        self.instances(t)
+            .into_iter()
+            .find(|&(p, s)| pos >= s && pos < s + track.patterns[p].len as f32)
+    }
+
+    pub fn gain(&self, t: usize) -> f32 {
+        self.mix.get(t).copied().unwrap_or_default().gain()
+    }
+
+    /// Preview-play track `t`'s instrument at its mixer gain.
+    pub fn preview_track(&self, t: usize) {
+        if let Some(audio) = &self.audio {
+            self.tracks[t].instrument.trigger(audio, self.gain(t));
+        }
+    }
+
+    /// Apply an active pane/fader/pan drag for the pointer at `(x, y)`.
+    pub fn apply_ui_drag(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
+        let Some(drag) = self.ui_drag else { return };
+        match drag {
+            UiDrag::Pane { edge, start, orig } => match edge {
+                PaneEdge::Browser => self.browser_w = (orig + x - start).clamp(120.0, 420.0),
+                PaneEdge::MidColumn => self.mid_w = (orig + x - start).clamp(280.0, 900.0),
+                PaneEdge::Rack => self.rack_h = (orig + y - start).clamp(80.0, 520.0),
+                // Dragging up grows the mixer.
+                PaneEdge::Mixer => self.mixer_h = (orig + start - y).clamp(120.0, 520.0),
+            },
+            UiDrag::Fader {
+                track,
+                start_y,
+                orig,
+            } => {
+                let v = (orig + (start_y - y) / 120.0).clamp(0.0, 1.0);
+                match track {
+                    Some(t) => self.mix[t].volume = v,
+                    None => {
+                        self.master_vol = v;
+                        if let Some(a) = &self.audio {
+                            a.set_master_vol(v);
+                        }
+                        self.master_slider.update(cx, |s, cx| {
+                            s.set_value(v);
+                            cx.notify();
+                        });
+                    }
+                }
+            }
+            UiDrag::Pan {
+                track,
+                start_x,
+                orig,
+            } => {
+                self.mix[track].pan = (orig + (x - start_x) / 60.0).clamp(-1.0, 1.0);
+            }
+        }
+        cx.notify();
     }
 
     pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
@@ -291,5 +412,6 @@ impl Daw {
             clips: vec![],
             active_pattern: 0,
         });
+        self.mix.push(Mix::default());
     }
 }

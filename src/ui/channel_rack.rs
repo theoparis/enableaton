@@ -1,11 +1,12 @@
+use crate::models::UiDrag;
 use gpui::{
-    AnyElement, ClickEvent, Context, FontWeight, IntoElement, SharedString, div, prelude::*, px,
-    rgb,
+    AnyElement, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent,
+    SharedString, div, prelude::*, px, rgb,
 };
 
 use super::core::button::{led, raised, vgrad};
 use super::core::knob::knob;
-use super::core::panel::{chip, fl_window, window_controls, window_title};
+use super::core::panel::{chip, fl_window, window_title};
 use crate::daw::Daw;
 use crate::models::{Instrument, Note};
 use crate::theme::*;
@@ -59,10 +60,9 @@ impl Daw {
             let selected = self.selected_track == Some(t_idx);
 
             // Step highlight only while a clip of the edited pattern is playing.
-            let current_step = match track.clip_at(self.play_pos) {
-                Some(c) if self.playing && track.clips[c].pattern == p_idx => {
-                    let elapsed = self.play_pos - track.clips[c].start as f32;
-                    Some((elapsed * 4.0).floor() as usize % pat.steps_in_loop())
+            let current_step = match self.pattern_at(t_idx, self.play_pos) {
+                Some((pi, start)) if self.playing && pi == p_idx => {
+                    Some(((self.play_pos - start) * 4.0).floor() as usize % pat.steps_in_loop())
                 }
                 _ => None,
             };
@@ -132,7 +132,11 @@ impl Daw {
                     .child("Swing"),
             )
             .child(knob(0.0, 14., ACCENT))
-            .child(window_controls());
+            .child(super::close_ctl(
+                "close-rack",
+                |d| d.show_channel_rack = false,
+                cx,
+            ));
 
         let mut body = div()
             .id("rack-body")
@@ -238,9 +242,12 @@ impl Daw {
             .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
                 this.selected_track = Some(t_idx);
                 if let Some(audio) = &this.audio {
+                    let gain = this.gain(t_idx);
                     match (pad, &this.tracks[t_idx].instrument) {
-                        (Some(p), Instrument::DrumRack(pads)) => audio.trigger(pads[p].sample),
-                        (_, inst) => inst.trigger(audio),
+                        (Some(p), Instrument::DrumRack(pads)) => {
+                            audio.trigger(pads[p].sample, gain)
+                        }
+                        (_, inst) => inst.trigger(audio, gain),
                     }
                 }
                 cx.notify();
@@ -283,6 +290,7 @@ impl Daw {
                             .cursor_pointer()
                             .hover(|s| s.border_color(rgb(BEVEL)))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                let gain = this.gain(t_idx);
                                 let track = &mut this.tracks[t_idx];
                                 let p_idx = track.active_pattern;
                                 let cell = &mut track.patterns[p_idx].lanes[lane][s];
@@ -290,9 +298,9 @@ impl Daw {
                                 if *cell && let Some(audio) = &this.audio {
                                     match (pad, &track.instrument) {
                                         (Some(p), Instrument::DrumRack(pads)) => {
-                                            audio.trigger(pads[p].sample)
+                                            audio.trigger(pads[p].sample, gain)
                                         }
-                                        (_, inst) => inst.trigger(audio),
+                                        (_, inst) => inst.trigger(audio, gain),
                                     }
                                 }
                                 cx.notify();
@@ -327,8 +335,40 @@ impl Daw {
             .gap(px(4.))
             .px(px(6.))
             .child(mute)
-            .child(knob(0.5, 15., TEXT_BRIGHT))
-            .child(knob(0.78, 15., TEXT_BRIGHT))
+            .child(
+                knob((self.mix[t_idx].pan + 1.0) / 2.0, 15., TEXT_BRIGHT)
+                    .id(SharedString::from(format!("ch-pan-{r_idx}")))
+                    .cursor_col_resize()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                            cx.stop_propagation();
+                            this.ui_drag = Some(UiDrag::Pan {
+                                track: t_idx,
+                                start_x: f32::from(ev.position.x),
+                                orig: this.mix[t_idx].pan,
+                            });
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .child(
+                knob(self.mix[t_idx].volume, 15., TEXT_BRIGHT)
+                    .id(SharedString::from(format!("ch-vol-{r_idx}")))
+                    .cursor_ns_resize()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                            cx.stop_propagation();
+                            this.ui_drag = Some(UiDrag::Fader {
+                                track: Some(t_idx),
+                                start_y: f32::from(ev.position.y),
+                                orig: this.mix[t_idx].volume,
+                            });
+                            cx.notify();
+                        }),
+                    ),
+            )
             .child(
                 div()
                     .flex_none()

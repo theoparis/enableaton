@@ -1,6 +1,6 @@
 use gpui::{
-    ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, SharedString, div,
-    prelude::*, px, rgb,
+    ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, SharedString,
+    deferred, div, prelude::*, px, rgb,
 };
 
 use super::core::button::{tool_btn, vgrad};
@@ -9,10 +9,124 @@ use super::core::text::dim;
 use crate::daw::Daw;
 use crate::theme::*;
 
-const MENU_ITEMS: &[&str] = &[
+const MENU_NAMES: &[&str] = &[
     "FILE", "EDIT", "ADD", "PATTERNS", "VIEW", "OPTIONS", "TOOLS", "HELP",
 ];
 const SCOPE_BARS: usize = 36;
+
+type Action = fn(&mut Daw, &mut Context<Daw>);
+
+struct MenuEntry {
+    label: String,
+    action: Action,
+}
+
+fn entry(label: impl Into<String>, action: Action) -> MenuEntry {
+    MenuEntry {
+        label: label.into(),
+        action,
+    }
+}
+
+fn checked(on: bool, label: &str) -> String {
+    format!("{} {label}", if on { "✓" } else { "\u{2003}" })
+}
+
+fn menu_items(d: &Daw, menu: usize) -> Vec<MenuEntry> {
+    match menu {
+        0 => vec![entry("Quit", |_, cx| cx.quit())],
+        1 => vec![
+            entry("Clear selected pattern", |d, _| {
+                if let Some(t) = d.selected_track {
+                    let track = &mut d.tracks[t];
+                    if let Some(p) = track.patterns.get_mut(track.active_pattern) {
+                        p.notes.clear();
+                        p.lanes.iter_mut().for_each(|l| *l = [false; STEPS]);
+                        d.status = Some(format!("Cleared pattern {}", p.name));
+                    }
+                }
+            }),
+            entry("Remove clips of selected channel", |d, _| {
+                if let Some(t) = d.selected_track {
+                    d.tracks[t].clips.clear();
+                    d.status = Some(format!("Removed clips of {}", d.tracks[t].name));
+                }
+            }),
+        ],
+        2 => vec![entry("Channel (synth)", |d, _| {
+            d.add_track();
+            d.selected_track = Some(d.tracks.len() - 1);
+            d.status = Some("Added channel".into());
+        })],
+        3 => vec![
+            entry("New pattern", |d, _| {
+                if let Some(t) = d.selected_track {
+                    let idx = d.tracks[t].add_pattern();
+                    d.tracks[t].active_pattern = idx;
+                    d.status = Some("New pattern".into());
+                }
+            }),
+            entry("Clone pattern", |d, _| {
+                if let Some(t) = d.selected_track {
+                    let track = &mut d.tracks[t];
+                    if let Some(src) = track.patterns.get(track.active_pattern).cloned() {
+                        let mut copy = src;
+                        copy.name = format!("P{}", track.patterns.len() + 1);
+                        track.patterns.push(copy);
+                        track.active_pattern = track.patterns.len() - 1;
+                        d.status = Some("Cloned pattern".into());
+                    }
+                }
+            }),
+        ],
+        4 => vec![
+            entry(checked(d.show_browser, "Browser"), |d, _| {
+                d.show_browser ^= true
+            }),
+            entry(checked(d.show_channel_rack, "Channel rack"), |d, _| {
+                d.show_channel_rack ^= true
+            }),
+            entry(checked(d.show_piano_roll, "Piano roll"), |d, _| {
+                d.show_piano_roll ^= true
+            }),
+            entry(checked(d.show_playlist, "Playlist"), |d, _| {
+                d.show_playlist ^= true
+            }),
+            entry(checked(d.show_mixer, "Mixer"), |d, _| d.show_mixer ^= true),
+        ],
+        5 => vec![
+            entry("Reset layout", |d, _| {
+                d.browser_w = BROWSER_W;
+                d.mid_w = MID_COL_W;
+                d.rack_h = RACK_H;
+                d.mixer_h = MIXER_H;
+                d.show_browser = true;
+                d.show_channel_rack = true;
+                d.show_piano_roll = true;
+                d.show_playlist = true;
+                d.show_mixer = true;
+                d.status = Some("Layout reset".into());
+            }),
+            entry("Piano roll zoom in", |d, _| {
+                d.piano_roll_zoom = (d.piano_roll_zoom + 0.5).min(8.0)
+            }),
+            entry("Piano roll zoom out", |d, _| {
+                d.piano_roll_zoom = (d.piano_roll_zoom - 0.5).max(0.5)
+            }),
+        ],
+        6 => vec![
+            entry("Mute all channels", |d, _| {
+                d.tracks.iter_mut().for_each(|t| t.muted = true)
+            }),
+            entry("Unmute all channels", |d, _| {
+                d.tracks.iter_mut().for_each(|t| t.muted = false)
+            }),
+        ],
+        _ => vec![entry("About Enableaton", |d, _| {
+            d.status = Some(format!("Enableaton {}", env!("CARGO_PKG_VERSION")));
+        })],
+    }
+}
 
 fn separator() -> impl IntoElement {
     div()
@@ -47,7 +161,69 @@ impl Daw {
             None => "(none)".to_string(),
         };
 
-        // ── Left: menu + hint line + master volume ─────────────────────────────
+        // ── Menu bar with dropdowns ────────────────────────────────────────────
+        let mut menu_bar = div().flex().flex_row().gap(px(2.));
+        for (m_idx, name) in MENU_NAMES.iter().enumerate() {
+            let open = self.open_menu == Some(m_idx);
+            let mut item = div()
+                .id(SharedString::from(format!("menu-{m_idx}")))
+                .relative()
+                .px(px(4.))
+                .text_size(px(10.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(if open { ACCENT } else { TEXT }))
+                .cursor_pointer()
+                .hover(|s| s.text_color(rgb(ACCENT)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                    this.open_menu = if this.open_menu == Some(m_idx) {
+                        None
+                    } else {
+                        Some(m_idx)
+                    };
+                    cx.notify();
+                }))
+                .child(*name);
+            if open {
+                let mut list = div()
+                    .absolute()
+                    .top(px(14.))
+                    .left(px(0.))
+                    .w(px(170.))
+                    .py(px(3.))
+                    .flex()
+                    .flex_col()
+                    .rounded(px(3.))
+                    .bg(rgb(0x2b3237))
+                    .border_1()
+                    .border_color(rgb(BEVEL))
+                    .shadow_md();
+                for (i_idx, entry) in menu_items(self, m_idx).into_iter().enumerate() {
+                    let action = entry.action;
+                    list = list.child(
+                        div()
+                            .id(SharedString::from(format!("menu-{m_idx}-{i_idx}")))
+                            .px(px(10.))
+                            .h(px(18.))
+                            .flex()
+                            .items_center()
+                            .text_size(px(11.))
+                            .text_color(rgb(TEXT))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(ACCENT_DIM)).text_color(rgb(TEXT_BRIGHT)))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                                cx.stop_propagation();
+                                this.open_menu = None;
+                                action(this, cx);
+                                cx.notify();
+                            }))
+                            .child(SharedString::from(entry.label)),
+                    );
+                }
+                item = item.child(deferred(list).priority(2));
+            }
+            menu_bar = menu_bar.child(item);
+        }
+
         let menu = div()
             .flex_none()
             .w(px(300.))
@@ -55,21 +231,7 @@ impl Daw {
             .flex_col()
             .justify_center()
             .gap(px(3.))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(7.))
-                    .children(MENU_ITEMS.iter().map(|m| {
-                        div()
-                            .text_size(px(10.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(TEXT))
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(rgb(ACCENT)))
-                            .child(*m)
-                    })),
-            )
+            .child(menu_bar)
             .child(
                 div()
                     .flex()
@@ -85,9 +247,8 @@ impl Daw {
                             .text_size(px(10.))
                             .text_color(rgb(TEXT_DIM))
                             .overflow_hidden()
-                            .child(SharedString::from(format!(
-                                "untitled.enb — {} channels",
-                                self.tracks.len()
+                            .child(SharedString::from(self.status.clone().unwrap_or_else(
+                                || format!("untitled.enb — {} channels", self.tracks.len()),
                             ))),
                     )
                     .child(dim("VOL"))
@@ -253,6 +414,18 @@ impl Daw {
             }));
 
         let pattern_sel = lcd()
+            .id("pattern-sel")
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
+                // Cycle the selected channel's active pattern.
+                if let Some(t) = this.selected_track {
+                    let track = &mut this.tracks[t];
+                    if !track.patterns.is_empty() {
+                        track.active_pattern = (track.active_pattern + 1) % track.patterns.len();
+                    }
+                }
+                cx.notify();
+            }))
             .h(px(22.))
             .w(px(150.))
             .gap(px(4.))
@@ -302,6 +475,17 @@ impl Daw {
                 ACCENT,
                 cx.listener(|this, _: &ClickEvent, _w, cx| {
                     this.show_piano_roll ^= true;
+                    cx.notify();
+                }),
+            ))
+            .child(tool_btn(
+                "win-playlist",
+                "▤",
+                22.,
+                self.show_playlist,
+                ACCENT,
+                cx.listener(|this, _: &ClickEvent, _w, cx| {
+                    this.show_playlist ^= true;
                     cx.notify();
                 }),
             ))
