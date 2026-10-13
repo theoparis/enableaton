@@ -73,8 +73,14 @@ pub struct ParamSpec {
 pub trait InstrumentPlugin: Send + Sync {
     fn short_label(&self) -> &str;
     fn badge_color(&self) -> u32;
-    /// Synthesize one note at `midi_pitch` (A4 = 69 = 440 Hz).
-    fn render_note(&self, midi_pitch: u8) -> Box<dyn Source<Item = f32> + Send>;
+    /// Synthesize one note at `midi_pitch` (A4 = 69 = 440 Hz). `hold_secs` is
+    /// how long the key is held before release begins; `None` falls back to
+    /// the plugin's own default (previews).
+    fn render_note(
+        &self,
+        midi_pitch: u8,
+        hold_secs: Option<f32>,
+    ) -> Box<dyn Source<Item = f32> + Send>;
     /// Editable parameters, if any. Indices are stable and shared with
     /// `get_param` / `set_param`.
     fn params(&self) -> &'static [ParamSpec] {
@@ -110,7 +116,9 @@ pub const P_AMP: usize = 6;
 pub const P_LFO_TARGET: usize = 7;
 pub const P_LFO_RATE: usize = 8;
 pub const P_LFO_DEPTH: usize = 9;
-const N_PARAMS: usize = 10;
+pub const P_DETUNE: usize = 10;
+pub const P_CUTOFF: usize = 11;
+const N_PARAMS: usize = 12;
 
 const SHAPE_NAMES: &[&str] = &["SIN", "SAW", "SQR", "TRI"];
 const LFO_TARGETS: &[&str] = &["OFF", "PITCH", "AMP"];
@@ -186,6 +194,20 @@ const WT_PARAMS: [ParamSpec; N_PARAMS] = [
         kind: ParamKind::Float(""),
         group: "LFO",
     },
+    ParamSpec {
+        name: "DETUNE",
+        min: 0.0,
+        max: 50.0,
+        kind: ParamKind::Float("ct"),
+        group: "OSC",
+    },
+    ParamSpec {
+        name: "CUT",
+        min: 100.0,
+        max: 12000.0,
+        kind: ParamKind::Float("Hz"),
+        group: "FILTER",
+    },
 ];
 
 /// Wavetable synth with a runtime-editable parameter set (device panel edits
@@ -213,15 +235,17 @@ impl WavetableSynth {
                 WaveShape::Square => 2.0,
                 WaveShape::Triangle => 3.0,
             },
-            0.01, // attack
-            0.1,  // decay
-            0.7,  // sustain
-            0.3,  // release
-            0.5,  // note len
-            0.5,  // amplitude
-            0.0,  // lfo target (off)
-            5.0,  // lfo rate
-            0.3,  // lfo depth
+            0.01,    // attack
+            0.1,     // decay
+            0.7,     // sustain
+            0.3,     // release
+            0.5,     // note len
+            0.5,     // amplitude
+            0.0,     // lfo target (off)
+            5.0,     // lfo rate
+            0.3,     // lfo depth
+            0.0,     // detune (cents, total spread)
+            12000.0, // cutoff (Hz)
         ];
         Self {
             params: defaults.map(|v| AtomicU32::new(f32::to_bits(v))),
@@ -247,13 +271,20 @@ impl WavetableSynth {
         self
     }
 
-    pub fn with_note_len(self, note_len: f32) -> Self {
-        self.set(P_NOTE_LEN, note_len);
+    pub fn with_amplitude(self, amplitude: f32) -> Self {
+        self.set(P_AMP, amplitude);
         self
     }
 
-    pub fn with_amplitude(self, amplitude: f32) -> Self {
-        self.set(P_AMP, amplitude);
+    /// Two-oscillator unison spread, in cents.
+    pub fn with_detune(self, cents: f32) -> Self {
+        self.set(P_DETUNE, cents);
+        self
+    }
+
+    /// One-pole lowpass cutoff in Hz.
+    pub fn with_cutoff(self, hz: f32) -> Self {
+        self.set(P_CUTOFF, hz);
         self
     }
 
@@ -307,17 +338,29 @@ impl InstrumentPlugin for WavetableSynth {
         self.set(idx, val.clamp(spec.min, spec.max));
     }
 
-    fn render_note(&self, midi_pitch: u8) -> Box<dyn Source<Item = f32> + Send> {
+    fn render_note(
+        &self,
+        midi_pitch: u8,
+        hold_secs: Option<f32>,
+    ) -> Box<dyn Source<Item = f32> + Send> {
         let freq = 440.0 * 2.0_f64.powf((midi_pitch as f64 - 69.0) / 12.0);
         let sr = 44100_u32;
-        let note_len = self.get(P_NOTE_LEN);
+        let note_len = hold_secs.unwrap_or_else(|| self.get(P_NOTE_LEN)).max(0.01);
         let release = self.get(P_RELEASE);
         let total = ((note_len + release) * sr as f32) as u64;
         let shape_idx = (self.get(P_SHAPE).round() as usize).min(N_SHAPES - 1);
+        let half_spread = 2.0_f64.powf(self.get(P_DETUNE) as f64 / 2.0 / 1200.0);
+        let phase_inc = freq / sr as f64;
+        let cutoff = self.get(P_CUTOFF) as f64;
         Box::new(WavetableSource {
             table: Arc::clone(&self.tables[shape_idx]),
-            phase: 0.0,
-            phase_inc: freq / sr as f64,
+            phase_a: 0.0,
+            // Offset start phase so the two oscillators don't begin aligned.
+            phase_b: 0.37,
+            inc_a: phase_inc * half_spread,
+            inc_b: phase_inc / half_spread,
+            lp_alpha: (1.0 - (-2.0 * PI * cutoff / sr as f64).exp()) as f32,
+            lp_state: 0.0,
             current: 0,
             total,
             sample_rate: sr,
@@ -336,8 +379,12 @@ impl InstrumentPlugin for WavetableSynth {
 
 struct WavetableSource {
     table: Arc<Vec<f32>>,
-    phase: f64,
-    phase_inc: f64,
+    phase_a: f64,
+    phase_b: f64,
+    inc_a: f64,
+    inc_b: f64,
+    lp_alpha: f32,
+    lp_state: f32,
     current: u64,
     total: u64,
     sample_rate: u32,
@@ -354,18 +401,36 @@ struct WavetableSource {
 }
 
 impl WavetableSource {
-    fn envelope(&self, t: f32) -> f32 {
+    /// Level while the key is held (attack → decay → sustain).
+    fn gate_level(&self, t: f32) -> f32 {
         if t < self.attack {
             t / self.attack
         } else if t < self.attack + self.decay {
             let dt = (t - self.attack) / self.decay;
             1.0 - dt * (1.0 - self.sustain)
-        } else if t < self.note_len {
+        } else {
             self.sustain
+        }
+    }
+
+    /// Release ramps from whatever level the envelope had when the key was
+    /// let go, so short notes don't click.
+    fn envelope(&self, t: f32) -> f32 {
+        if t < self.note_len {
+            self.gate_level(t)
         } else {
             let dt = ((t - self.note_len) / self.release).min(1.0);
-            self.sustain * (1.0 - dt)
+            self.gate_level(self.note_len) * (1.0 - dt)
         }
+    }
+
+    fn read(&self, phase: f64) -> f32 {
+        let n = self.table.len();
+        let idx = phase.fract() * n as f64;
+        let i0 = idx.floor() as usize % n;
+        let i1 = (i0 + 1) % n;
+        let frac = (idx - idx.floor()) as f32;
+        self.table[i0] * (1.0 - frac) + self.table[i1] * frac
     }
 }
 
@@ -378,12 +443,8 @@ impl Iterator for WavetableSource {
         }
         let t = self.current as f32 / self.sample_rate as f32;
 
-        let n = self.table.len() as f64;
-        let idx = self.phase.fract() * n;
-        let i0 = idx.floor() as usize % self.table.len();
-        let i1 = (i0 + 1) % self.table.len();
-        let frac = (idx - idx.floor()) as f32;
-        let sample = self.table[i0] * (1.0 - frac) + self.table[i1] * frac;
+        let sample = 0.5 * (self.read(self.phase_a) + self.read(self.phase_b));
+        self.lp_state += self.lp_alpha * (sample - self.lp_state);
 
         let lfo = (2.0 * PI * self.lfo_rate as f64 * t as f64).sin();
         let amp_mod = if self.lfo_target == 2 {
@@ -393,14 +454,15 @@ impl Iterator for WavetableSource {
             1.0
         };
 
-        let out = (sample * self.envelope(t) * self.amplitude * amp_mod).clamp(-1.0, 1.0);
+        let out = (self.lp_state * self.envelope(t) * self.amplitude * amp_mod).clamp(-1.0, 1.0);
         let pitch_mod = if self.lfo_target == 1 {
             // Vibrato: ±1 semitone at full depth.
             2.0_f64.powf(lfo * self.lfo_depth as f64 / 12.0)
         } else {
             1.0
         };
-        self.phase += self.phase_inc * pitch_mod;
+        self.phase_a += self.inc_a * pitch_mod;
+        self.phase_b += self.inc_b * pitch_mod;
         self.current += 1;
         Some(out)
     }
@@ -473,10 +535,15 @@ impl AudioEngine {
         self.mixer.add(src);
     }
 
-    pub fn trigger_plugin(&self, plugin: &dyn InstrumentPlugin, midi_pitch: Option<u8>) {
+    pub fn trigger_plugin(
+        &self,
+        plugin: &dyn InstrumentPlugin,
+        midi_pitch: Option<u8>,
+        hold_secs: Option<f32>,
+    ) {
         let pitch = midi_pitch.unwrap_or(60);
         let vol = f32::from_bits(self.master_vol.load(Ordering::Relaxed));
-        let src = plugin.render_note(pitch);
+        let src = plugin.render_note(pitch, hold_secs);
         self.mixer.add(src.amplify(vol));
     }
 }

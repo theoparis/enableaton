@@ -7,10 +7,9 @@ use std::time::{Duration, Instant};
 
 use std::sync::Arc;
 
-use crate::audio::{AudioEngine, SampleType, WaveShape, WavetableSynth};
+use crate::audio::{AudioEngine, WaveShape, WavetableSynth};
 use crate::models::{
-    Clip, DragKind, DragState, DrumPad, Instrument, Note, ParamDrag, PatternData, PianoRollResize,
-    Track,
+    Clip, DragKind, DragState, Instrument, ParamDrag, PatternData, PianoRollResize, Track,
 };
 use crate::theme::*;
 
@@ -62,89 +61,6 @@ impl Daw {
             eprintln!("warning: no audio device found, sequencer will be silent");
         }
 
-        let kick_steps = [
-            true, false, false, false, true, false, false, false, true, false, false, false, true,
-            false, false, false,
-        ];
-        let snare_steps = [
-            false, false, false, false, true, false, false, false, false, false, false, false,
-            true, false, false, false,
-        ];
-        let hihat_steps = [
-            true, false, true, false, true, false, true, false, true, false, true, false, true,
-            false, true, false,
-        ];
-        let openhat_steps = [
-            false, false, false, false, false, false, true, false, false, false, false, false,
-            false, false, true, false,
-        ];
-        let clap_steps = [
-            false, false, false, false, true, false, false, true, false, false, false, false, true,
-            false, false, false,
-        ];
-        let bass_steps = [
-            true, false, false, true, false, false, true, false, true, false, false, false, true,
-            false, false, true,
-        ];
-        let synth_steps = [
-            true, false, false, false, false, false, true, false, false, true, false, false, true,
-            false, false, false,
-        ];
-        let pad_steps = [
-            true, false, false, false, false, false, false, false, true, false, false, false,
-            false, false, false, false,
-        ];
-
-        let bass_synth = Arc::new(
-            WavetableSynth::new(WaveShape::Saw, "BS", 0x1a2a6a)
-                .with_adsr(0.005, 0.1, 0.6, 0.15)
-                .with_note_len(0.3)
-                .with_amplitude(0.6),
-        );
-        let lead_synth = Arc::new(
-            WavetableSynth::new(WaveShape::Saw, "SY", 0x143d35)
-                .with_adsr(0.005, 0.08, 0.5, 0.1)
-                .with_note_len(0.25)
-                .with_amplitude(0.5),
-        );
-        let pad_synth = Arc::new(
-            WavetableSynth::new(WaveShape::Sine, "PD", 0x3a2050)
-                .with_adsr(0.3, 0.2, 0.8, 0.5)
-                .with_note_len(1.0)
-                .with_amplitude(0.4),
-        );
-
-        // 16 steps @ 1/16 = 4 beats of pattern-relative notes.
-        fn steps_to_notes(steps: &[bool; STEPS], pitch: u8) -> Vec<Note> {
-            (0..STEPS)
-                .filter(|&s| steps[s])
-                .map(|s| Note {
-                    pitch,
-                    start: s as f32 * 0.25,
-                    duration: 0.25,
-                })
-                .collect()
-        }
-
-        fn note_pattern(name: &str, steps: &[bool; STEPS], pitch: u8) -> PatternData {
-            PatternData {
-                name: name.into(),
-                len: 4,
-                lanes: vec![],
-                notes: steps_to_notes(steps, pitch),
-            }
-        }
-
-        fn clips_at(starts: &[usize]) -> Vec<Clip> {
-            starts
-                .iter()
-                .map(|&s| Clip {
-                    pattern: 0,
-                    start: s,
-                })
-                .collect()
-        }
-
         Self {
             playing: false,
             recording: false,
@@ -165,7 +81,7 @@ impl Daw {
             piano_roll_origin_x: Rc::new(Cell::new(0.0)),
             audio,
             _tick_task: None,
-            // Open on the lead synth so the piano roll has content in view.
+            // Open on the arp so the piano roll has content in view.
             selected_track: Some(2),
             bpm_drag_origin: None,
             pattern_scroll: ScrollHandle::default(),
@@ -190,87 +106,7 @@ impl Daw {
                     })
                 })
             },
-            tracks: vec![
-                Track {
-                    name: "Drums".into(),
-                    color: TRACK_COLORS[0],
-                    muted: false,
-                    patterns: vec![PatternData {
-                        name: "P1".into(),
-                        len: 4,
-                        lanes: vec![
-                            kick_steps,
-                            snare_steps,
-                            hihat_steps,
-                            openhat_steps,
-                            clap_steps,
-                        ],
-                        notes: vec![],
-                    }],
-                    // Same pattern placed back-to-back = the loop.
-                    clips: clips_at(&[0, 4, 8, 12, 16, 20, 24, 28]),
-                    active_pattern: 0,
-                    instrument: Instrument::DrumRack(vec![
-                        DrumPad {
-                            name: "Kick".into(),
-                            sample: SampleType::Kick,
-                            color: TRACK_COLORS[0],
-                            muted: false,
-                        },
-                        DrumPad {
-                            name: "Snare".into(),
-                            sample: SampleType::Snare,
-                            color: TRACK_COLORS[1],
-                            muted: false,
-                        },
-                        DrumPad {
-                            name: "Hi-Hat".into(),
-                            sample: SampleType::HiHat,
-                            color: TRACK_COLORS[2],
-                            muted: false,
-                        },
-                        DrumPad {
-                            name: "Open Hat".into(),
-                            sample: SampleType::OpenHat,
-                            color: TRACK_COLORS[3],
-                            muted: false,
-                        },
-                        DrumPad {
-                            name: "Clap".into(),
-                            sample: SampleType::Clap,
-                            color: TRACK_COLORS[4],
-                            muted: false,
-                        },
-                    ]),
-                },
-                Track {
-                    name: "Bass".into(),
-                    color: TRACK_COLORS[5],
-                    muted: false,
-                    patterns: vec![note_pattern("P1", &bass_steps, 36)],
-                    clips: clips_at(&[2, 10, 18, 22]),
-                    active_pattern: 0,
-                    instrument: Instrument::Plugin(bass_synth),
-                },
-                Track {
-                    name: "Synth Lead".into(),
-                    color: TRACK_COLORS[6],
-                    muted: false,
-                    patterns: vec![note_pattern("P1", &synth_steps, 65)],
-                    clips: clips_at(&[4, 8, 16, 24]),
-                    active_pattern: 0,
-                    instrument: Instrument::Plugin(lead_synth),
-                },
-                Track {
-                    name: "Pad".into(),
-                    color: TRACK_COLORS[0],
-                    muted: false,
-                    patterns: vec![note_pattern("P1", &pad_steps, 60)],
-                    clips: clips_at(&[0, 8, 16, 24]),
-                    active_pattern: 0,
-                    instrument: Instrument::Plugin(pad_synth),
-                },
-            ],
+            tracks: crate::demo::tracks(),
         }
     }
 
@@ -320,7 +156,12 @@ impl Daw {
                                             }
                                             let fire = cs + note.start;
                                             if fire >= prev_pos && fire < cur {
-                                                t.instrument.trigger_note(note.pitch, audio);
+                                                let hold = note.duration * 60.0 / this.bpm as f32;
+                                                t.instrument.trigger_note(
+                                                    note.pitch,
+                                                    Some(hold),
+                                                    audio,
+                                                );
                                             }
                                         }
                                     }

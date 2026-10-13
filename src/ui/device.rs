@@ -161,7 +161,7 @@ impl Daw {
                                         p.set_param(p_idx, c_idx as f32);
                                         // Preview the new sound.
                                         if let Some(audio) = &this.audio {
-                                            audio.trigger_plugin(p.as_ref(), Some(60));
+                                            audio.trigger_plugin(p.as_ref(), Some(60), None);
                                         }
                                     }
                                     cx.notify();

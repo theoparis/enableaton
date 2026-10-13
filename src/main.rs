@@ -1,5 +1,6 @@
 mod audio;
 mod daw;
+mod demo;
 mod models;
 mod theme;
 mod ui;

@@ -265,7 +265,9 @@ impl Daw {
                                 duration: NOTE_DUR,
                             });
                             if let Some(audio) = &this.audio {
-                                this.tracks[t_idx].instrument.trigger_note(pitch, audio);
+                                this.tracks[t_idx]
+                                    .instrument
+                                    .trigger_note(pitch, None, audio);
                             }
                         }
                         cx.notify();

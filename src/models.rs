@@ -127,16 +127,21 @@ impl Instrument {
                     audio.trigger(pad.sample);
                 }
             }
-            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), None),
+            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), None, None),
         }
     }
-
-    /// Trigger with a specific MIDI pitch (piano roll note playback).
-    pub fn trigger_note(&self, pitch: u8, audio: &crate::audio::AudioEngine) {
+    /// Trigger with a specific MIDI pitch. `hold_secs` is the note length for
+    /// sequenced playback; `None` for live previews.
+    pub fn trigger_note(
+        &self,
+        pitch: u8,
+        hold_secs: Option<f32>,
+        audio: &crate::audio::AudioEngine,
+    ) {
         match self {
             Instrument::Sampler(s) => audio.trigger(*s),
             Instrument::DrumRack(_) => {}
-            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), Some(pitch)),
+            Instrument::Plugin(p) => audio.trigger_plugin(p.as_ref(), Some(pitch), hold_secs),
         }
     }
 
