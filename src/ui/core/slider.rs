@@ -6,7 +6,7 @@ use gpui::{
     relative, rgb,
 };
 
-use crate::theme::{ACCENT_DIM, BORDER};
+use crate::theme::{ACCENT_DIM, BORDER, LCD_BG};
 
 struct SliderDrag;
 
@@ -74,17 +74,33 @@ impl Render for Slider {
             )
             .child(
                 div()
+                    .relative()
                     .w_full()
-                    .h_2()
-                    .bg(rgb(BORDER))
+                    .h(px(4.))
+                    .bg(rgb(LCD_BG))
+                    .border_1()
+                    .border_color(rgb(BORDER))
                     .rounded_full()
-                    .overflow_hidden()
                     .child(
                         div()
                             .w(relative(self.value))
                             .h_full()
                             .bg(rgb(ACCENT_DIM))
                             .rounded_full(),
+                    )
+                    // Handle
+                    .child(
+                        div()
+                            .absolute()
+                            .left(relative(self.value))
+                            .top(px(-5.))
+                            .ml(px(-4.))
+                            .w(px(8.))
+                            .h(px(12.))
+                            .rounded(px(2.))
+                            .bg(super::button::vgrad(0x9aa4ab, 0x5a646b))
+                            .border_1()
+                            .border_color(rgb(BORDER)),
                     ),
             )
     }

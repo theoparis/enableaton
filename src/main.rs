@@ -12,7 +12,7 @@ actions!(daw, [Quit, TogglePlay]);
 
 fn main() {
     gpui_ce_platform::application().run(|cx| {
-        let bounds = Bounds::centered(None, size(px(1280.), px(780.)), cx);
+        let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
 
         let entity_slot: std::rc::Rc<std::cell::RefCell<Option<gpui::Entity<Daw>>>> =
             std::rc::Rc::new(std::cell::RefCell::new(None));

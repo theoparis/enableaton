@@ -1,19 +1,19 @@
 use gpui::{
     ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ScrollWheelEvent, SharedString, div, prelude::*, px, rgb,
+    MouseUpEvent, ScrollWheelEvent, SharedString, canvas, div, point, prelude::*, px, rgb,
 };
 
-use super::core::button::icon_btn;
-use super::core::panel::{chip, panel_header, panel_shell, panel_title};
+use super::core::button::{icon_btn, vgrad};
+use super::core::panel::{chip, fl_window, window_controls, window_title};
 use crate::daw::Daw;
 use crate::models::{Instrument, Note, PianoRollResize};
 use crate::theme::*;
 
-const PIANO_KEY_W: f32 = 48.0;
-const PANEL_H: f32 = 320.0;
-const HEADER_H: f32 = 28.0;
-const NOTE_AREA_H: f32 = PANEL_H - HEADER_H;
-const ROW_H: f32 = 16.0;
+const PIANO_KEY_W: f32 = 46.0;
+const ROW_H: f32 = 14.0;
+const VELOCITY_H: f32 = 44.0;
+/// Fixed display velocity (notes don't carry velocity yet).
+const DEFAULT_VELOCITY: f32 = 0.78;
 
 // Pitch range rendered: C1 (24) to B5 (83) = 60 semitones.
 const MIN_PITCH: u8 = 24;
@@ -26,35 +26,54 @@ const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 8.0;
 const ZOOM_STEP: f32 = 0.25;
 
+const WHITE_ROW: u32 = 0x3c4851;
+const BLACK_ROW: u32 = 0x323d45;
+
 fn is_black_key(pitch: u8) -> bool {
     matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
 }
 
-fn note_label(pitch: u8) -> Option<String> {
-    if pitch % 12 == 0 {
-        let octave = (pitch / 12) as i32 - 1;
-        Some(format!("C{octave}"))
-    } else {
-        None
-    }
+fn note_name(pitch: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    format!(
+        "{}{}",
+        NAMES[(pitch % 12) as usize],
+        (pitch / 12) as i32 - 1
+    )
 }
 
 impl Daw {
     pub(super) fn render_piano_roll(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let Some(t_idx) = self.selected_track else {
-            return div().flex_none().h(px(PANEL_H));
+            return fl_window()
+                .size_full()
+                .child(
+                    window_title("♪", "Piano roll")
+                        .child(div().flex_1())
+                        .child(window_controls()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(11.))
+                        .text_color(rgb(TEXT_DIM))
+                        .child("Select a channel to edit its notes"),
+                );
         };
 
-        if self.tracks[t_idx].patterns.is_empty() {
-            self.tracks[t_idx].add_pattern();
-            self.tracks[t_idx].active_pattern = 0;
-        }
+        self.ensure_active_pattern(t_idx);
         let track = &self.tracks[t_idx];
-        let p_idx = track.active_pattern.min(track.patterns.len() - 1);
+        let p_idx = track.active_pattern;
         let pat = &track.patterns[p_idx];
 
         let track_name = track.name.clone();
         let color = track.color;
+        let note_color = lighten(color, 0.3);
         let pat_len = pat.len;
         let pat_beats = pat_len as f32;
         let zoom = self.piano_roll_zoom;
@@ -72,84 +91,99 @@ impl Daw {
                 .then_some(self.play_pos - cs)
         });
 
-        // Single scroll handle: .x = horizontal, .y = vertical.
+        // Single scroll handle: .x = horizontal, .y = vertical (both ≤ 0).
         let scroll = self.piano_roll_scroll.clone();
-        let scroll_y = f32::from(scroll.offset().y); // ≤ 0 when scrolled down
+        // Newly shown pattern: center the keyboard on its notes (or C4).
+        if self.piano_roll_focus != Some((t_idx, p_idx)) {
+            self.piano_roll_focus = Some((t_idx, p_idx));
+            let center = match notes_snapshot.len() {
+                0 => 60.0,
+                n => notes_snapshot.iter().map(|n| n.pitch as f32).sum::<f32>() / n as f32,
+            };
+            let y = (MAX_PITCH as f32 - center) * ROW_H - 110.0;
+            scroll.set_offset(point(px(0.), px(-y.max(0.))));
+        }
+        let scroll_x = f32::from(scroll.offset().x);
+        let scroll_y = f32::from(scroll.offset().y);
 
-        // ── Header ──────────────────────────────────────────────────────────────
-        let header = panel_header()
-            .child(panel_title(SharedString::from(format!(
-                "PIANO ROLL: {}",
-                track_name.to_uppercase()
-            ))))
-            .child(super::pattern_tabs(t_idx, &pattern_names, p_idx, cx))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(TEXT_DIM))
-                    .child("click to add · click note to remove"),
-            )
-            .child(div().flex_1())
-            .when(is_plugin, |d| d.child(super::view_tabs(false, cx)))
-            .child(chip(SharedString::from(format!("{pat_len}b"))))
-            .child(chip(SharedString::from(format!("{:.0}%", zoom * 100.0))))
-            .child(icon_btn(
-                "pr-zoom-out",
-                "−",
-                false,
-                cx.listener(|this, _: &ClickEvent, _w, cx| {
-                    this.piano_roll_zoom = (this.piano_roll_zoom - ZOOM_STEP).max(ZOOM_MIN);
-                    cx.notify();
-                }),
-            ))
-            .child(icon_btn(
-                "pr-zoom-in",
-                "+",
-                false,
-                cx.listener(|this, _: &ClickEvent, _w, cx| {
-                    this.piano_roll_zoom = (this.piano_roll_zoom + ZOOM_STEP).min(ZOOM_MAX);
-                    cx.notify();
-                }),
-            ));
+        // ── Title bar ───────────────────────────────────────────────────────────
+        let header = window_title(
+            "♪",
+            SharedString::from(format!("Piano roll - {track_name}")),
+        )
+        .child(super::pattern_tabs(t_idx, &pattern_names, p_idx, cx))
+        .child(div().flex_1())
+        .when(is_plugin, |d| d.child(super::view_tabs(false, cx)))
+        .child(chip(SharedString::from(format!("{:.0}%", zoom * 100.0))))
+        .child(icon_btn(
+            "pr-zoom-out",
+            "−",
+            false,
+            cx.listener(|this, _: &ClickEvent, _w, cx| {
+                this.piano_roll_zoom = (this.piano_roll_zoom - ZOOM_STEP).max(ZOOM_MIN);
+                cx.notify();
+            }),
+        ))
+        .child(icon_btn(
+            "pr-zoom-in",
+            "+",
+            false,
+            cx.listener(|this, _: &ClickEvent, _w, cx| {
+                this.piano_roll_zoom = (this.piano_roll_zoom + ZOOM_STEP).min(ZOOM_MAX);
+                cx.notify();
+            }),
+        ))
+        .child(window_controls());
 
-        // ── Piano keys column ────────────────────────────────────────────────────
+        // ── Piano keyboard ──────────────────────────────────────────────────────
         let total_keys_h = N_ROWS as f32 * ROW_H;
         let mut keys_col = div()
             .flex_none()
             .w(px(PIANO_KEY_W))
             .h(px(total_keys_h))
             .flex()
-            .flex_col()
-            .bg(rgb(SURFACE))
-            .border_r_1()
-            .border_color(rgb(BORDER));
+            .flex_col();
 
         for row in 0..N_ROWS {
             let pitch = MAX_PITCH - row as u8;
             let black = is_black_key(pitch);
-            let label = note_label(pitch);
-
-            keys_col = keys_col.child(
-                div()
-                    .flex_none()
-                    .h(px(ROW_H))
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .px_2()
-                    .bg(rgb(if black { 0x0e1620 } else { SURFACE }))
-                    .border_b_1()
-                    .border_color(rgb(if pitch % 12 == 0 { BORDER } else { 0x1a2535 }))
-                    .when_some(label, |d, lbl| {
-                        d.child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(ACCENT))
-                                .font_weight(FontWeight::BOLD)
-                                .child(SharedString::from(lbl)),
-                        )
-                    }),
-            );
+            let key = div()
+                .flex_none()
+                .h(px(ROW_H))
+                .w_full()
+                .relative()
+                .bg(vgrad(0xf2f4f5, 0xd5dadd))
+                .border_b_1()
+                .border_color(rgb(if matches!(pitch % 12, 0 | 5) {
+                    0x8a949b
+                } else {
+                    0xbfc6cb
+                }))
+                .when(pitch.is_multiple_of(12), |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .right(px(3.))
+                            .top(px(1.))
+                            .text_size(px(8.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0x3a4248))
+                            .child(SharedString::from(note_name(pitch))),
+                    )
+                })
+                .when(black, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .w(px(PIANO_KEY_W * 0.6))
+                            .h_full()
+                            .rounded_r(px(2.))
+                            .bg(vgrad(0x3a4248, 0x15191c)),
+                    )
+                });
+            keys_col = keys_col.child(key);
         }
 
         // ── Note grid (one pattern long) ─────────────────────────────────────────
@@ -162,41 +196,38 @@ impl Daw {
             .flex_col();
 
         let bpb = self.beats_per_bar;
+        let origin = self.piano_roll_origin_x.clone();
         for row in 0..N_ROWS {
             let pitch = MAX_PITCH - row as u8;
             let black = is_black_key(pitch);
-            let is_c = pitch % 12 == 0;
-
-            let row_notes: Vec<Note> = notes_snapshot
-                .iter()
-                .filter(|n| n.pitch == pitch)
-                .cloned()
-                .collect();
 
             let scroll_ref = scroll.clone();
+            let origin_ref = origin.clone();
             let mut pitch_row = div()
                 .id(SharedString::from(format!("pr-row-{pitch}")))
                 .flex_none()
                 .relative()
                 .w(px(total_w))
                 .h(px(ROW_H))
-                .bg(rgb(if black { 0x111820 } else { BG }))
+                .bg(rgb(if black { BLACK_ROW } else { WHITE_ROW }))
                 .border_b_1()
-                .border_color(rgb(if is_c { BORDER } else { 0x192030 }))
+                .border_color(rgb(if matches!(pitch % 12, 0 | 5) {
+                    GRID_LINE
+                } else {
+                    mix(WHITE_ROW, GRID_LINE, 0.5)
+                }))
                 .cursor_crosshair()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
-                        let zoom = this.piano_roll_zoom;
-                        let beat_px = BEAT_PX * zoom;
+                        let beat_px = BEAT_PX * this.piano_roll_zoom;
                         let sx = f32::from(scroll_ref.offset().x);
-                        // content_x = screen_x - PIANO_KEY_W - scroll_x (scroll_x ≤ 0)
-                        let raw_x = f32::from(ev.position.x) - PIANO_KEY_W - sx;
+                        let raw_x = f32::from(ev.position.x) - origin_ref.get() - sx;
                         if raw_x < 0.0 {
                             return;
                         }
 
-                        // Check if clicking near the right edge of any note on this row.
+                        // Clicking near a note's right edge starts a resize.
                         const RESIZE_HIT: f32 = 6.0;
                         let resize_hit = this.tracks[t_idx].patterns[p_idx]
                             .notes
@@ -241,23 +272,24 @@ impl Daw {
                     }),
                 );
 
-            // Bar grid lines.
-            for bar in 0..=(pat_len / bpb) {
-                let x = bar as f32 * bpb as f32 * beat_px;
+            // Beat / bar grid lines.
+            for beat in 1..pat_len {
                 pitch_row = pitch_row.child(
                     div()
                         .absolute()
-                        .left(px(x))
+                        .left(px(beat as f32 * beat_px))
                         .top_0()
-                        .w_px()
+                        .w(px(1.))
                         .h_full()
-                        .bg(rgb(BORDER))
-                        .opacity(0.35),
+                        .bg(rgb(if beat % bpb == 0 {
+                            darken(GRID_LINE, 0.3)
+                        } else {
+                            GRID_LINE
+                        })),
                 );
             }
 
-            // Notes.
-            for note in &row_notes {
+            for note in notes_snapshot.iter().filter(|n| n.pitch == pitch) {
                 let nx = note.start * beat_px;
                 let nw = (note.duration * beat_px - 1.0).max(3.0);
                 pitch_row = pitch_row.child(
@@ -267,10 +299,17 @@ impl Daw {
                         .top(px(1.0))
                         .w(px(nw))
                         .h(px(ROW_H - 2.0))
-                        .bg(rgb(color))
-                        .rounded_sm()
-                        .border_l_2()
-                        .border_color(rgb(ACCENT))
+                        .flex()
+                        .items_center()
+                        .pl(px(3.))
+                        .overflow_hidden()
+                        .rounded(px(2.))
+                        .bg(vgrad(lighten(note_color, 0.2), note_color))
+                        .border_1()
+                        .border_color(rgb(darken(note_color, 0.55)))
+                        .text_size(px(8.))
+                        .text_color(rgb(darken(note_color, 0.7)))
+                        .when(nw > 22.0, |d| d.child(SharedString::from(note_name(pitch))))
                         // Resize handle: rightmost 6px, ew-resize cursor.
                         .child(
                             div()
@@ -287,64 +326,140 @@ impl Daw {
             grid = grid.child(pitch_row);
         }
 
-        // Playhead (pattern-local).
         if let Some(lp) = local_ph {
             grid = grid.child(
                 div()
                     .absolute()
                     .left(px(lp * beat_px))
                     .top_0()
-                    .w(px(2.))
+                    .w(px(1.))
                     .h_full()
-                    .bg(rgb(PLAYHEAD))
-                    .opacity(0.8),
+                    .bg(rgb(PLAYHEAD)),
             );
         }
 
         // ── Layout ───────────────────────────────────────────────────────────────
-        // Keys column is outside the scrollable area; synced vertically by reading
-        // scroll.offset().y and applying it as an absolute top offset. This avoids
-        // the dual-scroller conflict where two track_scroll elements fight over the
-        // shared handle's x component.
+        // Keyboard and velocity lane sit outside the scroll container and follow
+        // its offset manually, so only one element owns the scroll handle.
         let keys_outer = div()
             .flex_none()
             .w(px(PIANO_KEY_W))
-            .h(px(NOTE_AREA_H))
+            .h_full()
             .overflow_hidden()
             .relative()
+            .border_r_1()
+            .border_color(rgb(BORDER))
+            .child(keys_col.absolute().top(px(scroll_y)).left(px(0.)));
+
+        let grid_area = div()
+            .flex_1()
+            .h_full()
+            .relative()
             .child(
-                // scroll_y ≤ 0; top(scroll_y) shifts content up when scrolled down.
-                keys_col.absolute().top(px(scroll_y)).left(px(0.)),
+                canvas(
+                    move |bounds, _, _| origin.set(f32::from(bounds.left())),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                div()
+                    .id("piano-roll-scroll")
+                    .size_full()
+                    .overflow_scroll()
+                    .bg(rgb(INSET))
+                    .track_scroll(&scroll)
+                    .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _w, cx| {
+                        if ev.modifiers.control {
+                            let delta = f32::from(-ev.delta.pixel_delta(px(1.0)).y);
+                            let step = if delta > 0.0 { ZOOM_STEP } else { -ZOOM_STEP };
+                            this.piano_roll_zoom =
+                                (this.piano_roll_zoom + step).clamp(ZOOM_MIN, ZOOM_MAX);
+                            cx.notify();
+                        }
+                    }))
+                    .child(grid),
             );
 
-        // Grid: single overflow_scroll container (both X and Y) with one handle.
-        let grid_area = div()
-            .id("piano-roll-scroll")
-            .flex_1()
-            .h(px(NOTE_AREA_H))
-            .overflow_scroll()
-            .track_scroll(&scroll)
-            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _w, cx| {
-                if ev.modifiers.control {
-                    let delta = f32::from(-ev.delta.pixel_delta(px(1.0)).y);
-                    let step = if delta > 0.0 { ZOOM_STEP } else { -ZOOM_STEP };
-                    this.piano_roll_zoom = (this.piano_roll_zoom + step).clamp(ZOOM_MIN, ZOOM_MAX);
-                    cx.notify();
-                }
-            }))
-            .child(grid);
-
-        let note_area = div()
-            .flex_1()
+        // Velocity lane: one stem per note at its start.
+        let mut stems = div()
+            .absolute()
+            .top_0()
+            .left(px(scroll_x))
+            .w(px(total_w))
+            .h_full();
+        for beat in 0..pat_len {
+            stems = stems.child(
+                div()
+                    .absolute()
+                    .left(px(beat as f32 * beat_px))
+                    .top_0()
+                    .w(px(1.))
+                    .h_full()
+                    .bg(rgb(GRID_LINE)),
+            );
+        }
+        for note in &notes_snapshot {
+            let h = (VELOCITY_H - 8.0) * DEFAULT_VELOCITY;
+            stems = stems
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(note.start * beat_px + 3.))
+                        .bottom_0()
+                        .w(px(1.))
+                        .h(px(h))
+                        .bg(rgb(note_color)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(note.start * beat_px))
+                        .bottom(px(h - 3.))
+                        .w(px(7.))
+                        .h(px(7.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(rgb(note_color)),
+                );
+        }
+        let velocity = div()
+            .flex_none()
+            .h(px(VELOCITY_H))
             .flex()
             .flex_row()
-            .overflow_hidden()
-            .child(keys_outer)
-            .child(grid_area);
+            .border_t_1()
+            .border_color(rgb(BORDER))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(PIANO_KEY_W))
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgb(SURFACE))
+                    .border_r_1()
+                    .border_color(rgb(BORDER))
+                    .text_size(px(8.))
+                    .text_color(rgb(TEXT_DIM))
+                    .child("VEL"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .relative()
+                    .overflow_hidden()
+                    .bg(rgb(INSET))
+                    .child(stems),
+            );
 
-        panel_shell(PANEL_H)
+        fl_window()
+            .size_full()
             .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _w, cx| {
-                let Some(ref resize) = this.piano_roll_resize.clone() else {
+                let Some(resize) = this.piano_roll_resize.clone() else {
                     return;
                 };
                 let beat_px = BEAT_PX * this.piano_roll_zoom;
@@ -372,6 +487,15 @@ impl Daw {
                 }),
             )
             .child(header)
-            .child(note_area)
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_row()
+                    .overflow_hidden()
+                    .child(keys_outer)
+                    .child(grid_area),
+            )
+            .child(velocity)
     }
 }

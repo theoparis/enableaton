@@ -116,16 +116,76 @@ const SHAPE_NAMES: &[&str] = &["SIN", "SAW", "SQR", "TRI"];
 const LFO_TARGETS: &[&str] = &["OFF", "PITCH", "AMP"];
 
 const WT_PARAMS: [ParamSpec; N_PARAMS] = [
-    ParamSpec { name: "WAVE", min: 0.0, max: 3.0, kind: ParamKind::Choice(SHAPE_NAMES), group: "OSC" },
-    ParamSpec { name: "ATK", min: 0.001, max: 1.0, kind: ParamKind::Float("s"), group: "ENVELOPE" },
-    ParamSpec { name: "DEC", min: 0.001, max: 1.0, kind: ParamKind::Float("s"), group: "ENVELOPE" },
-    ParamSpec { name: "SUS", min: 0.0, max: 1.0, kind: ParamKind::Float(""), group: "ENVELOPE" },
-    ParamSpec { name: "REL", min: 0.01, max: 2.0, kind: ParamKind::Float("s"), group: "ENVELOPE" },
-    ParamSpec { name: "LEN", min: 0.05, max: 2.0, kind: ParamKind::Float("s"), group: "OSC" },
-    ParamSpec { name: "VOL", min: 0.0, max: 1.0, kind: ParamKind::Float(""), group: "OSC" },
-    ParamSpec { name: "DEST", min: 0.0, max: 2.0, kind: ParamKind::Choice(LFO_TARGETS), group: "LFO" },
-    ParamSpec { name: "RATE", min: 0.1, max: 20.0, kind: ParamKind::Float("Hz"), group: "LFO" },
-    ParamSpec { name: "DEPTH", min: 0.0, max: 1.0, kind: ParamKind::Float(""), group: "LFO" },
+    ParamSpec {
+        name: "WAVE",
+        min: 0.0,
+        max: 3.0,
+        kind: ParamKind::Choice(SHAPE_NAMES),
+        group: "OSC",
+    },
+    ParamSpec {
+        name: "ATK",
+        min: 0.001,
+        max: 1.0,
+        kind: ParamKind::Float("s"),
+        group: "ENVELOPE",
+    },
+    ParamSpec {
+        name: "DEC",
+        min: 0.001,
+        max: 1.0,
+        kind: ParamKind::Float("s"),
+        group: "ENVELOPE",
+    },
+    ParamSpec {
+        name: "SUS",
+        min: 0.0,
+        max: 1.0,
+        kind: ParamKind::Float(""),
+        group: "ENVELOPE",
+    },
+    ParamSpec {
+        name: "REL",
+        min: 0.01,
+        max: 2.0,
+        kind: ParamKind::Float("s"),
+        group: "ENVELOPE",
+    },
+    ParamSpec {
+        name: "LEN",
+        min: 0.05,
+        max: 2.0,
+        kind: ParamKind::Float("s"),
+        group: "OSC",
+    },
+    ParamSpec {
+        name: "VOL",
+        min: 0.0,
+        max: 1.0,
+        kind: ParamKind::Float(""),
+        group: "OSC",
+    },
+    ParamSpec {
+        name: "DEST",
+        min: 0.0,
+        max: 2.0,
+        kind: ParamKind::Choice(LFO_TARGETS),
+        group: "LFO",
+    },
+    ParamSpec {
+        name: "RATE",
+        min: 0.1,
+        max: 20.0,
+        kind: ParamKind::Float("Hz"),
+        group: "LFO",
+    },
+    ParamSpec {
+        name: "DEPTH",
+        min: 0.0,
+        max: 1.0,
+        kind: ParamKind::Float(""),
+        group: "LFO",
+    },
 ];
 
 /// Wavetable synth with a runtime-editable parameter set (device panel edits

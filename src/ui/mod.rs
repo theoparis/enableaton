@@ -1,10 +1,11 @@
-mod beat;
+mod browser;
+mod channel_rack;
 pub mod core;
 mod device;
-mod headers;
-mod pattern;
+mod mixer;
 mod piano_roll;
-mod transport;
+mod playlist;
+mod toolbar;
 
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
@@ -15,47 +16,73 @@ use crate::daw::Daw;
 use crate::models::Instrument;
 use crate::theme::*;
 use core::button::tab_btn;
-use core::text::dim;
+
+/// Gap between docked windows.
+const DOCK_GAP: f32 = 3.0;
 
 impl Render for Daw {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let n_tracks = self.tracks.len();
-        let total_bars = self.total_bars;
-        let bpm = self.bpm;
+        let toolbar = self.render_toolbar(cx);
 
-        let status = div()
-            .flex_none()
-            .h(px(STATUS_H))
+        let mut workspace = div()
+            .flex_1()
+            .min_h(px(0.))
             .flex()
             .flex_row()
-            .items_center()
-            .px_3()
-            .gap_4()
-            .bg(rgb(SURFACE))
-            .border_t_1()
-            .border_color(rgb(BORDER))
-            .child(dim(format!("{n_tracks} tracks")))
-            .child(dim(format!("{total_bars} bars  ·  {bpm} BPM")))
-            .child(div().flex_1())
-            .child(dim(format!("◆ Enableaton v{}", env!("CARGO_PKG_VERSION"))));
+            .gap(px(DOCK_GAP))
+            .p(px(DOCK_GAP))
+            .overflow_hidden();
 
-        let transport = self.render_transport(cx);
-        let headers = self.render_headers(cx);
-        let pattern_scroll = self.render_pattern_area(cx);
-        let bottom_panel: AnyElement = if !self.show_beat_editor {
-            div().flex_none().into_any_element()
-        } else {
-            match self.selected_track.map(|i| &self.tracks[i].instrument) {
-                Some(Instrument::DrumRack(_)) => self.render_beat_panel(cx).into_any_element(),
-                Some(Instrument::Plugin(_)) if self.show_device => {
-                    self.render_device_panel(cx).into_any_element()
-                }
-                Some(Instrument::Sampler(_) | Instrument::Plugin(_)) => {
-                    self.render_piano_roll(cx).into_any_element()
-                }
-                None => div().flex_none().into_any_element(),
+        if self.show_browser {
+            workspace = workspace.child(self.render_browser(cx));
+        }
+
+        // Middle column: channel rack above the piano roll / channel settings.
+        if self.show_channel_rack || self.show_piano_roll {
+            let mut mid = div()
+                .flex_none()
+                .w(px(MID_COL_W))
+                .h_full()
+                .flex()
+                .flex_col()
+                .gap(px(DOCK_GAP));
+            if self.show_channel_rack {
+                let rack = self.render_channel_rack(cx);
+                mid = mid.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .when(self.show_piano_roll, |d| d.flex_none().max_h(px(300.)))
+                        .when(!self.show_piano_roll, |d| d.flex_1())
+                        .child(rack),
+                );
             }
-        };
+            if self.show_piano_roll {
+                let lower: AnyElement =
+                    match self.selected_track.map(|i| &self.tracks[i].instrument) {
+                        Some(Instrument::DrumRack(_)) => {
+                            self.render_drum_settings(cx).into_any_element()
+                        }
+                        Some(Instrument::Plugin(_)) if self.show_device => {
+                            self.render_device_panel(cx).into_any_element()
+                        }
+                        _ => self.render_piano_roll(cx).into_any_element(),
+                    };
+                mid = mid.child(div().flex_1().min_h(px(0.)).child(lower));
+            }
+            workspace = workspace.child(mid);
+        }
+
+        workspace = workspace.child(self.render_playlist(cx));
+
+        let mixer = self.show_mixer.then(|| {
+            div()
+                .flex_none()
+                .h(px(MIXER_H))
+                .px(px(DOCK_GAP))
+                .pb(px(DOCK_GAP))
+                .child(self.render_mixer(cx))
+        });
 
         div()
             .id("root")
@@ -92,18 +119,9 @@ impl Render for Daw {
                     this.param_drag = None;
                 }),
             )
-            .child(transport)
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_row()
-                    .overflow_hidden()
-                    .child(headers)
-                    .child(pattern_scroll),
-            )
-            .child(bottom_panel)
-            .child(status)
+            .child(toolbar)
+            .child(workspace)
+            .children(mixer)
     }
 }
 

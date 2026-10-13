@@ -1,6 +1,8 @@
 use gpui::{AppContext, Context, Entity, ScrollHandle, Task, point, px};
 
 use crate::ui::core::slider::Slider;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use std::sync::Arc;
@@ -24,7 +26,17 @@ pub struct Daw {
     pub total_bars: usize,
     pub drag: Option<DragState>,
     pub scrubbing: bool,
-    pub show_beat_editor: bool,
+    /// Song (playlist) vs. pattern playback mode toggle in the toolbar.
+    pub song_mode: bool,
+    pub show_browser: bool,
+    pub show_channel_rack: bool,
+    /// Lower docked window: piano roll / channel settings.
+    pub show_piano_roll: bool,
+    pub show_mixer: bool,
+    /// Window-space x of the playlist grid's left edge (recorded at paint).
+    pub playlist_origin_x: Rc<Cell<f32>>,
+    /// Window-space x of the piano-roll note grid's left edge (recorded at paint).
+    pub piano_roll_origin_x: Rc<Cell<f32>>,
     pub audio: Option<AudioEngine>,
     pub _tick_task: Option<Task<()>>,
     pub selected_track: Option<usize>,
@@ -33,6 +45,9 @@ pub struct Daw {
     pub piano_roll_scroll: ScrollHandle,
     pub piano_roll_zoom: f32,
     pub piano_roll_resize: Option<PianoRollResize>,
+    /// (track, pattern) the piano roll was last centered on; a change
+    /// re-centers the view on that pattern's notes.
+    pub piano_roll_focus: Option<(usize, usize)>,
     pub master_vol: f32,
     pub master_slider: Entity<Slider>,
     /// Show the device (plugin settings) panel instead of the piano roll.
@@ -121,7 +136,13 @@ impl Daw {
         }
 
         fn clips_at(starts: &[usize]) -> Vec<Clip> {
-            starts.iter().map(|&s| Clip { pattern: 0, start: s }).collect()
+            starts
+                .iter()
+                .map(|&s| Clip {
+                    pattern: 0,
+                    start: s,
+                })
+                .collect()
         }
 
         Self {
@@ -135,20 +156,23 @@ impl Daw {
             total_bars: 32,
             drag: None,
             scrubbing: false,
-            show_beat_editor: true,
+            song_mode: true,
+            show_browser: true,
+            show_channel_rack: true,
+            show_piano_roll: true,
+            show_mixer: true,
+            playlist_origin_x: Rc::new(Cell::new(0.0)),
+            piano_roll_origin_x: Rc::new(Cell::new(0.0)),
             audio,
             _tick_task: None,
-            selected_track: None,
+            // Open on the lead synth so the piano roll has content in view.
+            selected_track: Some(2),
             bpm_drag_origin: None,
             pattern_scroll: ScrollHandle::default(),
-            piano_roll_scroll: {
-                let h = ScrollHandle::default();
-                // Start scrolled to show C3–F4; offset is negative (more negative = further down).
-                h.set_offset(point(px(0.0), px(-270.0)));
-                h
-            },
-            piano_roll_zoom: 2.0,
+            piano_roll_scroll: ScrollHandle::default(),
+            piano_roll_zoom: 4.0,
             piano_roll_resize: None,
+            piano_roll_focus: None,
             show_device: false,
             param_drag: None,
             master_vol: 0.72,
@@ -327,11 +351,11 @@ impl Daw {
 
                         this.last_play_pos = this.play_pos;
 
-                        // Auto-scroll song editor.
+                        // Auto-scroll the playlist (gpui scroll offsets are ≤ 0).
                         let ph_x = this.play_pos * BEAT_PX;
                         let target_offset = (ph_x - 150.0).max(0.0);
                         this.pattern_scroll
-                            .set_offset(point(px(target_offset), px(0.)));
+                            .set_offset(point(px(-target_offset), px(0.)));
 
                         cx.notify();
                         true
@@ -359,9 +383,14 @@ impl Daw {
         }
     }
 
-    pub fn scrub_to(&mut self, window_x: f32) {
+    /// Beat under a window-space x coordinate in the playlist grid.
+    pub fn playlist_beat_at(&self, window_x: f32) -> f32 {
         let scroll_x = f32::from(self.pattern_scroll.offset().x);
-        let beat = ((window_x - HEADER_W + scroll_x) / BEAT_PX).max(0.0);
+        ((window_x - self.playlist_origin_x.get() - scroll_x) / BEAT_PX).max(0.0)
+    }
+
+    pub fn scrub_to(&mut self, window_x: f32) {
+        let beat = self.playlist_beat_at(window_x);
         let total = (self.total_bars * self.beats_per_bar) as f32;
         self.play_pos = beat.min(total - 0.001);
     }

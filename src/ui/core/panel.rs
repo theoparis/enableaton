@@ -1,55 +1,103 @@
 use gpui::{Div, FontWeight, IntoElement, SharedString, div, prelude::*, px, rgb};
 
+use super::button::vgrad;
 use crate::theme::*;
 
-pub const PANEL_HEADER_H: f32 = 28.0;
+/// Docked FL-style window: rounded frame with a gradient title bar. Append
+/// body content as children after `.child(window_title(...))`.
+pub fn fl_window() -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .rounded(px(3.))
+        .bg(rgb(SURFACE))
+        .border_1()
+        .border_color(rgb(BORDER))
+}
 
-/// Header strip for a bottom panel (piano roll / drum rack / device).
-/// Append title, chips and controls as children.
-pub fn panel_header() -> Div {
+/// Title bar strip: glyph + title, followed by any extra children
+/// (tabs, chips, buttons). A trailing window-control cluster is added by
+/// `window_controls()`.
+pub fn window_title(glyph: &'static str, title: impl Into<SharedString>) -> Div {
     div()
         .flex_none()
-        .h(px(PANEL_HEADER_H))
+        .h(px(WINDOW_TITLE_H))
         .flex()
         .flex_row()
         .items_center()
-        .px_3()
-        .gap_3()
-        .bg(rgb(SURFACE))
+        .px(px(6.))
+        .gap(px(6.))
+        .bg(vgrad(TITLE_TOP, TITLE_BOTTOM))
         .border_b_1()
         .border_color(rgb(BORDER))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(rgb(ACCENT))
+                .font_weight(FontWeight::BOLD)
+                .child(glyph),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(TEXT_BRIGHT))
+                .child(title.into()),
+        )
 }
 
-/// Accent-colored bold panel title.
-pub fn panel_title(text: impl Into<SharedString>) -> impl IntoElement {
-    div()
-        .text_xs()
-        .font_weight(FontWeight::BOLD)
-        .text_color(rgb(ACCENT))
-        .child(text.into())
-}
-
-/// Small bordered info pill ("1/16", "BAR 3", zoom %, …).
-pub fn chip(text: impl Into<SharedString>) -> impl IntoElement {
-    div()
-        .px_1()
-        .rounded_sm()
-        .bg(rgb(SURFACE2))
-        .border_1()
-        .border_color(rgb(BORDER))
-        .text_xs()
-        .text_color(rgb(TEXT_DIM))
-        .child(text.into())
-}
-
-/// Outer shell for a bottom panel: fixed height, column layout, top border.
-pub fn panel_shell(height: f32) -> Div {
+/// Decorative minimize/maximize/close cluster at the right of a title bar.
+pub fn window_controls() -> impl IntoElement {
     div()
         .flex_none()
-        .h(px(height))
         .flex()
-        .flex_col()
-        .bg(rgb(BG))
-        .border_t_1()
+        .flex_row()
+        .gap(px(3.))
+        .children(["▁", "□", "✕"].map(|g| {
+            div()
+                .w(px(13.))
+                .h(px(13.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(2.))
+                .text_size(px(8.))
+                .text_color(rgb(TEXT_DIM))
+                .bg(rgb(darken(TITLE_BOTTOM, 0.2)))
+                .child(g)
+        }))
+}
+
+/// Small recessed info pill ("1/16", "BAR 3", zoom %, …).
+pub fn chip(text: impl Into<SharedString>) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px(px(5.))
+        .h(px(15.))
+        .flex()
+        .items_center()
+        .rounded(px(2.))
+        .bg(rgb(LCD_BG))
+        .border_1()
         .border_color(rgb(BORDER))
+        .text_size(px(10.))
+        .text_color(rgb(LCD_TEXT))
+        .child(text.into())
+}
+
+/// LCD readout box (tempo, song position, pattern selector).
+pub fn lcd() -> Div {
+    div()
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .px(px(6.))
+        .rounded(px(2.))
+        .bg(vgrad(LCD_BG, 0x20262a))
+        .border_1()
+        .border_color(rgb(BORDER))
+        .text_color(rgb(LCD_TEXT))
 }
