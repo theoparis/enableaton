@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: enableton
+
+jobs:
+  build:
+    name: Build (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            asset: macos-arm64
+          - os: windows-latest
+            asset: windows-x64
+          - os: ubuntu-latest
+            asset: linux-x64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libasound2-dev \
+            libfontconfig-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libvulkan-dev \
+            libgl-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install pkg-config
+
+      - name: Set up mold
+        if: runner.os == 'Linux'
+        uses: rui314/setup-mold@staging
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package binary
+        shell: bash
+        run: |
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          mkdir -p dist
+          cp "target/release/${BIN_NAME}${ext}" "dist/${BIN_NAME}-${{ matrix.asset }}${ext}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release and upload binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --generate-notes
